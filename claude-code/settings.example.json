@@ -1,49 +1,24 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "_comment": "Merge the 'hooks' block below into your settings.json (~/.claude/settings.json or .claude/settings.json in the project). Replace <PREWALK_ROOT> with the absolute path to this claude-code/ directory (the one containing hooks/). Keep _shared/prewalk_core.py reachable: the hooks add ../_shared to sys.path, so do NOT move hooks/ out of this tree unless you also adjust _common.py.",
+  "_comment": "LOOSE-INSTALL fallback. The recommended way to install is as a plugin: `claude plugin marketplace add <repo> && claude plugin install prewalk@prewalk` — hooks register automatically via hooks/hooks.json and ${CLAUDE_PLUGIN_ROOT} is set for you. Only use the block below if you wire the hooks manually (not as a plugin). Replace <PREWALK_ROOT> with the absolute path to this claude-code/ directory.",
 
   "hooks": {
     "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"<PREWALK_ROOT>/hooks/export_session_id.py\""
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"<PREWALK_ROOT>/hooks/pause_detect.py\""
-          }
-        ]
-      }
+      { "hooks": [ { "type": "command",
+        "command": "python3 \"<PREWALK_ROOT>/hooks/export_session_id.py\"" } ] }
     ],
     "PostToolUse": [
-      {
-        "matcher": "TodoWrite",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"<PREWALK_ROOT>/hooks/pause_detect.py\""
-          }
-        ]
-      }
+      { "matcher": "TodoWrite|TaskCreate|TaskUpdate|TaskList",
+        "hooks": [ { "type": "command",
+          "command": "python3 \"<PREWALK_ROOT>/hooks/todo_tracker.py\"" } ] },
+      { "matcher": "Write|Edit|MultiEdit",
+        "hooks": [ { "type": "command",
+          "command": "python3 \"<PREWALK_ROOT>/hooks/edit_tracker.py\"" } ] }
     ],
     "PreToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"<PREWALK_ROOT>/hooks/edit_gate.py\""
-          }
-        ]
-      }
+      { "matcher": "Task",
+        "hooks": [ { "type": "command",
+          "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_router.py\"" } ] }
     ]
   }
 }

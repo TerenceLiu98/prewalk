@@ -482,28 +482,39 @@ def on_todos_changed(
 
 
 def on_pw_go(store_file: str | os.PathLike[str], session_id: str) -> HookAction:
-    """`/pw-go` was invoked. Only valid at the paused checkpoint."""
+    """`/pw-go` was invoked — user confirms the handoff.
+
+    Valid in the frontier or ready phase (the run is armed and the frontier has
+    done its part). In the new subagent-routing architecture the model cannot
+    switch its own model, so we instruct it to SPAWN a Task for the remaining
+    work; the host's PreToolUse handoff hook rewrites that spawn onto the
+    executor model. Returns a no-checkpoint message if nothing is armed."""
     state = load_state(store_file, session_id)
-    if state is None or state.phase != PAUSED:
+    if state is None or state.phase not in (FRONTIER, READY, PAUSED):
         return HookAction(
             additional_context=(
                 "There is no active prewalk checkpoint in this session. Reply with a single line "
                 "saying so and end your turn — do not touch the todo list or any file."
             )
         )
-    state.phase = EXECUTOR
-    save_state(store_file, state)
-    # The actual model switch is the adapter's job (it knows the slash command /
-    # SDK call). We hand it the note + the target model.
+    if state.handoff_done:
+        return HookAction(
+            additional_context=(
+                "Prewalk already handed off to the executor. Continue the remaining work in the "
+                "executor subagent; do not spawn another handoff."
+            )
+        )
+    # Keep phase as-is (ready or frontier); the handoff hook flips it to executor
+    # when it rewrites the spawn. Tell the model to spawn the Task now.
     return HookAction(
         additional_context=(
             f"{HANDOFF_NOTE}\n\n"
-            f"To put the cheaper executor model on this trajectory, run your host's mid-session "
-            f"model-switch command targeting `{state.executor_model}` (in both Claude Code and Codex "
-            f"that is `/model {state.executor_model}`). When all todos are done, restore the planner "
-            f"with `/model {state.original_model}`."
+            f"ACTION: hand off now by spawning ONE Task (Agent tool) whose prompt is your handoff "
+            f"summary — the files you read, the full todo/plan, what task #1 proved, and exactly what "
+            f"remains. The prewalk hook will automatically route that Task onto the {state.executor_model} "
+            f"executor. Do not switch models yourself; do not do the remaining edits in this session."
         ),
-        system_message=f"prewalk: handoff armed — switch to {state.executor_model} for the remaining todos.",
+        system_message=f"prewalk: handoff requested — spawn a Task for the remaining work (executor {state.executor_model}).",
     )
 
 

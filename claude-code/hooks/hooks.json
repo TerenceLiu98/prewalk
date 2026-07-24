@@ -13,7 +13,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "TodoWrite",
+        "matcher": "TodoWrite|TaskCreate|TaskUpdate|TaskList",
         "hooks": [
           {
             "type": "command",

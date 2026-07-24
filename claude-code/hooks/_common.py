@@ -76,34 +76,61 @@ def resolve_session_id(given: str) -> str:
     return ""
 
 
-def normalize_todos(payload: dict) -> list[core.Todo]:
-    """Read todos from TodoWrite tool_input (PreToolUse) or tool_response (PostToolUse).
+def _task_to_todo(item: dict) -> core.Todo | None:
+    """Coerce one task dict (TodoWrite OR the newer TaskCreate/TaskList shape) to a core.Todo.
 
-    Claude Code's TodoWrite items are {content, status, activeForm, ...}. There is
-    no stable per-item id, so we synthesize one from the content (the core only
-    needs an id for its validation error messages)."""
-    src = None
+    TodoWrite items: {content, status, activeForm}
+    New task system: {id/uuid, subject, description, status, ...}"""
+    if not isinstance(item, dict):
+        return None
+    content = str(item.get("content") or item.get("subject") or item.get("description") or "")
+    status = str(item.get("status") or "").lower()
+    # New system uses status values like "pending"/"in_progress"/"completed"; same vocabulary.
+    return core.Todo(
+        id=str(item.get("id") or item.get("uuid") or content[:40]),
+        content=content,
+        status=status,
+    )
+
+
+def normalize_todos(payload: dict) -> list[core.Todo]:
+    """Read the current task list from a tool event. Supports BOTH:
+
+    - TodoWrite: tool_input.todos = [{content, status, activeForm}, ...]
+    - New task system (TaskCreate/TaskUpdate/TaskList): tool_response may carry
+      a list of task objects, or a single created/updated task. We prefer a list
+      in tool_response (TaskList, or TodoWrite's echo); else fall back to a
+      single-item list from tool_input (TaskCreate)."""
+    out: list[core.Todo] = []
+
+    # 1) A list of items in tool_input (TodoWrite) or tool_response (TaskList).
+    for holder_key in ("tool_input", "tool_response"):
+        holder = payload.get(holder_key) or {}
+        items = None
+        if isinstance(holder, dict):
+            for k in ("todos", "tasks", "items"):
+                if isinstance(holder.get(k), list):
+                    items = holder[k]
+                    break
+        elif isinstance(holder, list):
+            items = holder
+        if items:
+            for it in items:
+                t = _task_to_todo(it) if isinstance(it, dict) else None
+                if t:
+                    out.append(t)
+            if out:
+                return out  # a full list beats a single item
+
+    # 2) Single created/updated task (TaskCreate / TaskUpdate tool_input).
     ti = payload.get("tool_input") or {}
-    if isinstance(ti, dict) and isinstance(ti.get("todos"), list):
-        src = ti["todos"]
-    if src is None:
-        tr = payload.get("tool_response") or {}
-        if isinstance(tr, dict) and isinstance(tr.get("todos"), list):
-            src = tr["todos"]
-        elif isinstance(tr, list):
-            src = tr
-    if not src:
-        return []
-    out = []
-    for item in src:
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content") or "")
-        out.append(core.Todo(
-            id=str(item.get("id") or content[:40]),
-            content=content,
-            status=str(item.get("status") or ""),
-        ))
+    if isinstance(ti, dict) and (ti.get("subject") or ti.get("description")):
+        t = _task_to_todo(ti)
+        if t:
+            # TaskCreate implies a new pending item; TaskUpdate carries a status.
+            if not t.status:
+                t.status = "pending"
+            out.append(t)
     return out
 
 
