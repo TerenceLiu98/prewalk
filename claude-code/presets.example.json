@@ -1,0 +1,38 @@
+{
+  "_comment": "Copy to ~/.claude/prewalk-presets.json and edit. Each preset pins a planner (frontier) and executor (cheap) model. Style A: /model switches mid-session so the executor inherits the full trajectory. Model aliases here use Claude Code aliases (opus/sonnet/haiku/fable) or full ids; change to what your install resolves. The default preset is 'code-value'.",
+
+  "default": "code-value",
+
+  "presets": {
+    "code-value": {
+      "description": "Balanced: Fable/Opus plans, Haiku executes",
+      "planner": "opus",
+      "executor": "haiku",
+      "max_todos": 12
+    },
+    "code-max": {
+      "description": "Top quality: Fable plans at high, Sonnet executes",
+      "planner": "fable",
+      "executor": "sonnet",
+      "max_todos": 12
+    },
+    "frontend": {
+      "description": "Vision-capable executor for screenshot-driven UI iteration",
+      "planner": "fable",
+      "executor": "sonnet",
+      "max_todos": 12
+    },
+    "backend": {
+      "description": "Text-only backend/systems; cheap Haiku executor",
+      "planner": "opus",
+      "executor": "haiku",
+      "max_todos": 10
+    },
+    "speed": {
+      "description": "Same model, effort drop only — fastest handoff",
+      "planner": "sonnet",
+      "executor": "haiku",
+      "max_todos": 8
+    }
+  }
+}

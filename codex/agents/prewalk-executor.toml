@@ -1,0 +1,31 @@
+# Codex subagent for prewalk Style B (appendix variant).
+#
+# Style A (the default) hands off via /model so the executor inherits the FULL
+# trajectory. This subagent is the alternative: it runs on a pinned cheap model
+# but starts with a FRESH context, receiving only the handoff SUMMARY the
+# frontier model writes. Lower fidelity; use only for long tasks where Style A's
+# re-send-the-trajectory cost is too high.
+#
+# Spawn from the parent agent via spawn_agent(name="prewalk-executor", ...) with
+# the frontier's handoff summary as the instruction. Edit the model below to a
+# cheap model your install resolves.
+
+model = "gpt-5.6-luna"
+effort = "xhigh"
+
+[instructions]
+text = """
+The exploration, the plan (todo list), and one completed, verified task (#1)
+were done by the frontier model and are summarized in the instruction you
+received. TRUST that summary; do not redo the exploration.
+
+1. Check off the ⏸️ PAUSE todo, then work the remaining todos STRICTLY IN ORDER,
+   one at a time. Never batch-complete items.
+2. Mark an item in_progress before working it; run its verification criterion and
+   mark it completed only after the verification passes.
+3. Imitate the pattern, style, and verification cadence demonstrated by task #1.
+4. Do not re-read files unless an edit requires fresh context.
+5. Before declaring completion, re-read the todo list: done means every item is
+   either completed or explicitly cancelled with a reason. Report anything you
+   could not complete.
+"""

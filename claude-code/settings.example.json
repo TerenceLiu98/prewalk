@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_comment": "Merge the 'hooks' block below into your settings.json (~/.claude/settings.json or .claude/settings.json in the project). Replace <PREWALK_ROOT> with the absolute path to this claude-code/ directory (the one containing hooks/). Keep _shared/prewalk_core.py reachable: the hooks add ../_shared to sys.path, so do NOT move hooks/ out of this tree unless you also adjust _common.py.",
+
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"<PREWALK_ROOT>/hooks/pause_detect.py\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"<PREWALK_ROOT>/hooks/pause_detect.py\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"<PREWALK_ROOT>/hooks/edit_gate.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

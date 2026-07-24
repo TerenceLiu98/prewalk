@@ -1,0 +1,45 @@
+# Codex prewalk presets — planner (frontier) / executor (cheap) model pairs.
+# Copy to $CODEX_HOME/prewalk-presets.toml (~/.codex/prewalk-presets.toml) and edit.
+# Style A: /model switches mid-session so the executor inherits the full trajectory.
+# Model ids below match the hermes-prewalk defaults; change to what your Codex
+# install resolves (run `codex` then `/model` to see available ids, or `model/list`
+# via the app-server). The optional " @ effort" suffix in planner/executor is
+# documentation only — set real effort via /model or turn/start.
+
+default_preset = "code-value"
+
+[presets.code-value]
+description = "Fast + cheap: Sol @ high plans, Luna @ xhigh executes"
+planner = "gpt-5.6-sol"
+executor = "gpt-5.6-luna"
+max_todos = 12
+
+[presets.code-max]
+description = "Top quality: Sol @ high plans, Sol @ medium executes (same model, effort drop)"
+planner = "gpt-5.6-sol"
+executor = "gpt-5.6-sol"
+max_todos = 12
+
+[presets.reason]
+description = "Hard reasoning: Gemini 3.1 Pro plans, Luna executes"
+planner = "gemini-3.1-pro-preview"
+executor = "gpt-5.6-luna"
+max_todos = 12
+
+[presets.backend]
+description = "Backend/systems (text-only OK): Sol plans, GLM-5.2 executes"
+planner = "gpt-5.6-sol"
+executor = "glm-5.2"
+max_todos = 10
+
+[presets.budget]
+description = "Open-weights (no vision): GLM-5.2 plans, Kimi K2.7-Code executes"
+planner = "glm-5.2"
+executor = "kimi-k2.7-code"
+max_todos = 10
+
+[presets.speed]
+description = "Speed runs: same model, effort drop only — fastest handoff"
+planner = "grok-4.5"
+executor = "grok-4.5"
+max_todos = 8

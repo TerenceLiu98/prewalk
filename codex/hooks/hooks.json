@@ -1,0 +1,29 @@
+{
+  "_comment": "Codex hook registration for the prewalk plugin. Codex loads this from <plugin>/hooks/hooks.json (or merge the equivalent [[hooks.*]] tables into config.toml). PLUGIN_ROOT is set by Codex to the plugin's root directory. The hooks invoke python3 on the scripts in this same directory.",
+
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"${PLUGIN_ROOT}/hooks/pause_detect.py\"",
+          "timeout": 30
+        }
+      ]
+    }
+  ],
+
+  "PreToolUse": [
+    {
+      "matcher": "^(apply_patch|Edit|Write)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"${PLUGIN_ROOT}/hooks/edit_gate.py\"",
+          "timeout": 30,
+          "statusMessage": "prewalk edit gate"
+        }
+      ]
+    }
+  ]
+}
