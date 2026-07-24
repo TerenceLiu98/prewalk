@@ -8,7 +8,8 @@
 #   merges the prewalk hooks into settings.json, and patches the <PLUGIN_ROOT>
 #   placeholder in the copied skills to the absolute hooks/ path.
 # - codex: copies presets into ~/.codex (or $CODEX_HOME). The plugin itself is
-#   meant to be installed via `codex plugin install`; this only stages presets.
+#   installed via the Codex marketplace (`codex plugin marketplace add` +
+#   `codex plugin add`); this only stages presets.
 #
 # Re-runnable: merges idempotently (hooks are appended each run, so remove
 # duplicates by hand if you re-run many times — or just run once).
@@ -74,9 +75,12 @@ install_codex() {
   cp "$ROOT/codex/presets.example.toml" "$HOME_DIR/prewalk-presets.toml"
   echo "✓ copied presets → $HOME_DIR/prewalk-presets.toml"
   echo
-  echo "Install the plugin itself with:"
-  echo "  codex plugin install \"$ROOT/codex\""
-  echo "  # or, once pushed to GitHub:  codex plugin install github.com/<you>/prewalk"
+  echo "Install the plugin itself (Codex uses a marketplace model, not 'plugin install'):"
+  echo "  codex plugin marketplace add \"$ROOT\""
+  echo "  codex plugin add prewalk@prewalk-marketplace"
+  echo "  # or, once pushed to GitHub:"
+  echo "  codex plugin marketplace add TerenceLiu98/prewalk"
+  echo "  codex plugin add prewalk@prewalk-marketplace"
   echo
   echo "Then edit $HOME_DIR/prewalk-presets.toml and restart Codex."
 }

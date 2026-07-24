@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/prewalk_pause.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/prewalk_edit_gate.sh",
+            "timeout": 30,
+            "statusMessage": "prewalk edit gate"
+          }
+        ]
+      }
+    ]
+  }
+}

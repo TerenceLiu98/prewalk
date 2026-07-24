@@ -9,21 +9,27 @@ engine with the Claude Code version. Packaged as a Codex **plugin**.
 
 ## Install
 
-**Prerequisite:** Python 3 on PATH (`python3 --version`).
+**Prerequisite:** Python 3 on PATH (`python3 --version`). Tested on Codex CLI
+`0.144.6` (the `codex plugin` marketplace model).
 
-### From GitHub (once you've pushed this repo)
+Codex does **not** have `codex plugin install <url>`. Plugins ship through a
+**marketplace**: you register this repo as a marketplace source, then install the
+plugin from it. This repo is already shaped as a marketplace (it has
+`.agents/plugins/marketplace.json` pointing at `./codex`).
+
+### From GitHub
 
 ```sh
-codex plugin install github.com/<you>/prewalk
+codex plugin marketplace add TerenceLiu98/prewalk
+codex plugin add prewalk@prewalk-marketplace
 ```
-Codex clones the repo and loads the plugin. The plugin is self-contained — the
-engine is vendored at `hooks/_shared/prewalk_core.py`, and `hooks/_bootstrap.py`
-finds it regardless of where Codex places the plugin.
+(`TerenceLiu98/prewalk` → replace with your fork if you forked.)
 
-### From a local path
+### From a local clone
 
 ```sh
-codex plugin install /path/to/prewalk/codex
+codex plugin marketplace add /path/to/prewalk
+codex plugin add prewalk@prewalk-marketplace
 ```
 
 ### Stage presets
@@ -31,14 +37,23 @@ codex plugin install /path/to/prewalk/codex
 ```sh
 ./install.sh codex        # copies presets → ~/.codex/prewalk-presets.toml
 # or manually:
-cp presets.example.toml "${CODEX_HOME:-$HOME/.codex}/prewalk-presets.toml"
+cp codex/presets.example.toml "${CODEX_HOME:-$HOME/.codex}/prewalk-presets.toml"
 ```
 Edit the planner/executor model ids in that file to what your Codex install
 resolves (run `/model` in Codex to see ids). Then restart Codex.
 
-> If you prefer not to use the plugin packaging, copy `skills/*/SKILL.md` into
-> `~/.codex/skills/` (or `.agents/skills/`) and merge the hook tables into
-> `~/.codex/config.toml` (see `hooks/hooks.json` for the exact tables).
+### Update / remove
+
+```sh
+codex plugin marketplace upgrade prewalk-marketplace   # re-pull after git changes
+codex plugin remove prewalk
+codex plugin marketplace remove prewalk-marketplace
+```
+
+> The plugin is self-contained: the engine is vendored at
+> `hooks/_shared/prewalk_core.py` and `hooks/_bootstrap.py` finds it, and the
+> skills reference their helper scripts by **relative path** (Codex runs a plugin
+> skill with cwd = plugin root).
 
 ## Use
 
@@ -121,17 +136,22 @@ cost is too high.
 
 ```
 codex/
-├── manifest.toml             # plugin manifest
+├── .codex-plugin/plugin.json   # Codex plugin manifest
+├── hooks.json                  # hook registration (Stop + PreToolUse)
+├── scripts/
+│   ├── prewalk_pause.sh        # Stop hook wrapper (cwd = plugin root)
+│   └── prewalk_edit_gate.sh    # PreToolUse wrapper
 ├── hooks/
-│   ├── hooks.json            # hook registration (Stop + PreToolUse)
-│   ├── _bootstrap.py         # locates prewalk_core.py from any layout
-│   ├── _common.py            # host I/O shim
-│   ├── _arm.py               # $prewalk helper: arm/status/disarm
-│   ├── _pw.py                # /pw-go + /pw-revise helper
-│   ├── pause_detect.py       # Stop hook
-│   ├── edit_gate.py          # PreToolUse(apply_patch|Edit|Write)
+│   ├── _bootstrap.py           # locates prewalk_core.py from any layout
+│   ├── _common.py              # host I/O shim
+│   ├── _arm.py                 # $prewalk helper: arm/status/disarm
+│   ├── _pw.py                  # /pw-go + /pw-revise helper
+│   ├── pause_detect.py         # Stop hook logic
+│   ├── edit_gate.py            # PreToolUse(apply_patch|Edit|Write) logic
 │   └── _shared/prewalk_core.py
 ├── skills/{prewalk,pw-go,pw-revise}/SKILL.md
 ├── agents/prewalk-executor.toml   # Style B
 └── presets.example.toml
 ```
+(Plus `../.agents/plugins/marketplace.json` at the repo root — the marketplace
+manifest that `codex plugin marketplace add` reads.)

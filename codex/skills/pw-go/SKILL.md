@@ -8,7 +8,7 @@ description: Prewalk handoff — confirm the plan and switch to the cheaper exec
 Run this to advance the prewalk state machine and get the handoff instructions:
 
 ```bash
-python3 "<PLUGIN_ROOT>/hooks/_pw.py" go "$CODEX_SESSION_ID"
+python3 hooks/_pw.py go "$CODEX_SESSION_ID"
 ```
 
 It prints either a handoff note (if you are at the ⏸️ checkpoint) or a message

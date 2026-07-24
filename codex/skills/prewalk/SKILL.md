@@ -11,21 +11,21 @@ window to a cheaper executor for the rest.
 
 ## Step 1 — arm the run
 
-Record the session state by running:
+Record the session state by running (paths are relative to the plugin root,
+which is the working directory when a plugin skill runs):
 
 ```bash
-python3 "<PLUGIN_ROOT>/hooks/_arm.py" arm "$CODEX_SESSION_ID" "$ARGUMENTS"
+python3 hooks/_arm.py arm "$CODEX_SESSION_ID" "$ARGUMENTS"
 ```
 
-Replace `<PLUGIN_ROOT>` with the plugin's root directory if the env var is unset.
 The script reads `$CODEX_HOME/prewalk-presets.toml` (default preset
 `code-value`), prints the chosen planner/executor pair, and tells you which
 model to be on. Add `--no-pause` anywhere in the arguments for auto-swap mode.
 
 Status / disarm any time with:
 ```bash
-python3 "<PLUGIN_ROOT>/hooks/_arm.py" status "$CODEX_SESSION_ID"
-python3 "<PLUGIN_ROOT>/hooks/_arm.py" disarm "$CODEX_SESSION_ID"
+python3 hooks/_arm.py status "$CODEX_SESSION_ID"
+python3 hooks/_arm.py disarm "$CODEX_SESSION_ID"
 ```
 
 ## Step 2 — become the frontier planner

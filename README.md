@@ -36,12 +36,15 @@ finishes by imitation.
 
 ### Codex (plugin)
 
+Codex has no `codex plugin install <url>` — it uses a **marketplace** model.
+This repo is already shaped as a marketplace:
+
 ```sh
-codex plugin install github.com/<you>/prewalk        # from GitHub, after you push
-# or locally:
-codex plugin install /path/to/prewalk/codex
+codex plugin marketplace add TerenceLiu98/prewalk            # or a local path
+codex plugin add prewalk@prewalk-marketplace
 cp codex/presets.example.toml ~/.codex/prewalk-presets.toml   # then edit the models
 ```
+See [`codex/README.md`](codex/README.md) for update/remove and details.
 
 ### Claude Code (skills + hooks)
 
@@ -115,20 +118,23 @@ up a Responses-API proxy in front of Codex via `openai_base_url`; out of scope.)
 ```text
 prewalk/
 ├── _shared/prewalk_core.py        # shared engine (source of truth)
+├── .agents/plugins/marketplace.json   # Codex marketplace manifest
 ├── claude-code/                   # Claude Code: skills + hooks + settings
 │   ├── hooks/  _bootstrap _common _arm _pw  pause_detect edit_gate  _shared/
 │   ├── skills/ prewalk  pw-go  pw-revise
 │   ├── agents/prewalk-executor.md        # Style B
 │   ├── settings.example.json  presets.example.json
 │   └── README.md
-├── codex/                         # Codex: plugin
-│   ├── manifest.toml  hooks/hooks.json
+├── codex/                         # Codex: plugin (installed via marketplace)
+│   ├── .codex-plugin/plugin.json         # Codex plugin manifest
+│   ├── hooks.json                        # hook registration (Stop + PreToolUse)
+│   ├── scripts/  prewalk_pause.sh  prewalk_edit_gate.sh   # hook wrappers
 │   ├── hooks/  _bootstrap _common _arm _pw  pause_detect edit_gate  _shared/
 │   ├── skills/ prewalk  pw-go  pw-revise
 │   ├── agents/prewalk-executor.toml      # Style B
 │   ├── presets.example.toml
 │   └── README.md
-└── install.sh                     # optional installer (claude-code for now)
+└── install.sh                     # installer (claude-code; codex stages presets)
 ```
 
 ## Verification
