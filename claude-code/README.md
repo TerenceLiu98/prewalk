@@ -1,131 +1,118 @@
 # prewalk for Claude Code
 
-> Frontier model explores + plans + lands the first verified edit, then hands the
-> live context window to a cheaper executor that finishes the rest.
+> A frontier model explores + plans + lands the first verified edit, then hands
+> off to a cheaper executor subagent that finishes the rest.
 
-Implementation of the **prewalk** technique ([Can Bölük / Stencil](https://stencil.so/blog/prewalk))
-for **Claude Code**. Shares its engine with the Codex version (`../_shared/prewalk_core.py`).
+A Claude Code **plugin** implementing the **prewalk** technique
+([Can Bölük / Stencil](https://stencil.so/blog/prewalk)). Shares its engine with
+the Codex version (`../_shared/prewalk_core.py`).
+
+## The handoff mechanism
+
+Claude Code hooks **cannot** switch the running session's model — but a
+`PreToolUse` hook **can** rewrite a subagent spawn's `model` and `subagent_type`
+(via `hookSpecificOutput.updatedInput`). So prewalk hands off by spawning a
+fresh `prewalk-executor` subagent with the executor model forced on, carrying the
+frontier's handoff summary. (Subagent-routing mechanism after
+[tzachbon/claude-model-router-hook](https://github.com/tzachbon/claude-model-router-hook).)
 
 ## Install
 
-**Prerequisite:** Python 3 on PATH (`python3 --version`; macOS: `brew install python`).
+**Prerequisite:** Python 3 on PATH (`python3 --version`).
 
-### Option A — installer script (recommended)
-
-From the repo root:
 ```sh
-./install.sh claude-code
-# or point it at a project config: ./install.sh claude-code ./.claude
+claude plugin marketplace add TerenceLiu98/prewalk      # or a local clone path
+claude plugin install prewalk@prewalk
+cp claude-code/presets.example.json ~/.claude/prewalk-presets.json   # then edit models
 ```
-This copies the skills + presets into `~/.claude`, patches the skill paths, and
-merges the prewalk hooks into `~/.claude/settings.json` (your existing settings
-are preserved).
+Restart Claude Code so the plugin loads.
 
-### Option B — manual
+### Update / remove
 
-1. Copy the skills and presets:
-   ```sh
-   CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-   mkdir -p "$CFG/skills"
-   cp -R skills/* "$CFG/skills/"
-   cp presets.example.json "$CFG/prewalk-presets.json"
-   ```
-2. In the copied skills, replace `<PLUGIN_ROOT>` with the absolute path to this
-   `claude-code/` directory (e.g. `/Users/you/prewalk/claude-code`).
-3. Merge the `hooks` block from `settings.example.json` into your `settings.json`,
-   replacing `<PREWALK_ROOT>` with the absolute path to this `claude-code/hooks`
-   directory.
-4. Edit `$CFG/prewalk-presets.json` — set the planner/executor model ids to what
-   your install resolves (aliases `opus`/`sonnet`/`haiku`/`fable`, or full ids).
-5. Restart Claude Code.
+```sh
+claude plugin marketplace update prewalk      # re-pull after git changes
+claude plugin uninstall prewalk
+claude plugin marketplace remove prewalk
+```
 
-> The hooks vendor a copy of the engine at `hooks/_shared/prewalk_core.py` and
-> `hooks/_bootstrap.py` finds it from any location, so you can move this directory
-> after install without breaking anything.
+> The plugin is self-contained: the engine is vendored at
+> `hooks/_shared/prewalk_core.py`, `hooks/_bootstrap.py` finds it, and a
+> `SessionStart` hook exposes the session id to skill commands via
+> `CLAUDE_ENV_FILE` (Claude Code does not inject it into Bash-tool subprocesses).
 
 ## Use
 
 ```
 /prewalk Add a settings page with tabbed sections
-/prewalk Refactor the auth module --no-pause        # auto-swap at the checkpoint
+... frontier explores, writes a capped todo list, completes task #1, writes a handoff summary ...
+/pw-go                  # spawn the executor (the hook routes it onto the executor model)
+/pw-revise <changes>    # revise the plan on the frontier instead
 ```
-
-Then at the `⏸️ PAUSE` checkpoint: review the plan and task #1, run **`/pw-go`**
-(to hand off to the executor model and finish), or **`/pw-revise <changes>`**
-(to revise the plan on the planner first).
 
 Status / disarm (helpers, not skills):
 ```sh
-python3 <claude-code>/hooks/_arm.py status "$CLAUDE_SESSION_ID"
-python3 <claude-code>/hooks/_arm.py disarm "$CLAUDE_SESSION_ID"
+python3 <plugin>/hooks/_arm.py status "$CLAUDE_SESSION_ID"
+python3 <plugin>/hooks/_arm.py disarm "$CLAUDE_SESSION_ID"
 ```
 
 ## How it works
 
 ```
-/prewalk <task>            → arms the run, suggests /model <planner>
-  frontier (Opus/Fable)    → explores, writes a capped todo (every item has a
+/prewalk <task>            → arms the run (frontier model)
+  frontier                 → explores, writes a capped todo (every item has a
                              verify-word), completes ONLY task #1 + verifies it,
-                             adds a `⏸️ PAUSE` todo, STOPS
+                             writes a handoff summary, stops
   (you review)
-/pw-go                     → injects the handoff note; you run /model <executor>
-  executor (Haiku)         → finishes remaining todos in order, inheriting the
-                             full trajectory; /model <planner> restores at the end
+/pw-go                     → instructs the frontier to spawn ONE Task for the
+                             remaining work
+  handoff_router (PreToolUse on Task)
+                           → rewrites that spawn into prewalk-executor with the
+                             executor model forced on
+  executor (cheap model)   → finishes the remaining todos in order, given the
+                             handoff summary; reports when done
 ```
 
-Three hooks drive the state machine:
-- **PostToolUse** (`TodoWrite`) + **Stop** → `hooks/pause_detect.py`: detects the
-  `⏸️ PAUSE` checkpoint (frontier→paused), detects executor completion (restore).
-- **PreToolUse** (`Write|Edit|MultiEdit`) → `hooks/edit_gate.py`: blocks edits in
-  the frontier phase until a valid capped todo list exists; disarms after a 2nd
-  violation.
+Hooks (`hooks/hooks.json`):
+- **SessionStart** → `export_session_id.py`: exposes the session id to skill
+  commands.
+- **PostToolUse** (`TodoWrite|TaskCreate|TaskUpdate|TaskList`) → `todo_tracker.py`:
+  tracks remaining tasks and detects completion.
+- **PostToolUse** (`Write|Edit|MultiEdit`) → `edit_tracker.py`: on the frontier's
+  first successful edit, arms the handoff.
+- **PreToolUse** (`Task`) → `handoff_router.py`: rewrites the spawn onto the
+  executor when the run is handoff-ready.
 
 `/prewalk`, `/pw-go`, `/pw-revise` are skills that call the Python helpers in
 `hooks/` (`_arm.py`, `_pw.py`).
 
-**The model switch:** Claude Code cannot switch the model from a hook, so `/pw-go`
-injects a handoff note instructing the model to run `/model <executor>` itself.
-For a programmatic switch use the Agent SDK `setModel()` (v2.1.200+).
+## Notes
 
-## Style B (appendix) — subagent variant
-
-`agents/prewalk-executor.md` pins `model: haiku`. Point a skill at
-`agent: prewalk-executor` for a lightweight handoff where the executor runs as a
-fresh subagent (clean main window). **Caveat:** a subagent starts fresh — it gets
-only the handoff *summary*, not the raw trajectory. Use only for long tasks where
-Style A's re-send cost is too high.
-
-## Differences from the article
-
-- **Checkpoint at end of turn, not mid-edit** (hooks fire at turn/tool boundaries).
-- **Explicit `/model` switch, not seamless continuation** (no request-rewrite
-  middleware); the executor inherits the same conversation, so it's close.
-
-## Limitations
-
-- No request-rewrite middleware → handoff is `/model` + a note, not the Hermes form.
-- Hooks can't switch the model directly; the skill instructs `/model`.
-- Style A re-sends the full trajectory to the cheap model every turn (cache lost on
-  `/model`).
-- The edit gate keys off `Write|Edit|MultiEdit`; a file-mutating tool under another
-  name isn't gated.
-- Per-session state lives in `~/.claude/prewalk-state.json`; a restart mid-run loses
-  the phase machine (the todo list + conversation survive — resume with `/pw-go`).
+- The executor is a **subagent** — it gets the frontier's handoff *summary*, not
+  the raw read trajectory. The frontier's job is to write a thorough handoff
+  (files read, the plan, what #1 proved, what remains) so the executor needs no
+  re-exploration.
+- Edit the planner/executor models in `~/.claude/prewalk-presets.json` to what
+  your install resolves (aliases `opus`/`sonnet`/`haiku`/`fable`, or full ids).
+- Per-session state lives in `~/.claude/prewalk-state.json`.
 
 ## Layout
 
 ```
 claude-code/
+├── .claude-plugin/plugin.json          # Claude Code plugin manifest
 ├── hooks/
-│   ├── _bootstrap.py          # locates prewalk_core.py from any layout
-│   ├── _common.py             # host I/O shim
-│   ├── _arm.py                # /prewalk helper: arm/status/disarm
-│   ├── _pw.py                 # /pw-go + /pw-revise helper
-│   ├── pause_detect.py        # Stop + PostToolUse(TodoWrite)
-│   ├── edit_gate.py           # PreToolUse(Write|Edit|MultiEdit)
+│   ├── hooks.json                      # hook registration
+│   ├── _bootstrap.py                   # locates prewalk_core.py from any layout
+│   ├── _common.py                      # host I/O shim + todo normalization
+│   ├── _arm.py                         # /prewalk helper: arm/status/disarm
+│   ├── _pw.py                          # /pw-go + /pw-revise helper
+│   ├── export_session_id.py            # SessionStart: expose session id
+│   ├── todo_tracker.py                 # PostToolUse: track tasks + completion
+│   ├── edit_tracker.py                 # PostToolUse: arm handoff on first edit
+│   ├── handoff_router.py               # PreToolUse: rewrite spawn onto executor
 │   └── _shared/prewalk_core.py
 ├── skills/{prewalk,pw-go,pw-revise}/SKILL.md
-├── agents/prewalk-executor.md # Style B
-├── settings.example.json
+├── agents/prewalk-executor.md          # the cheap-model executor subagent
+├── settings.example.json               # loose-install fallback
 └── presets.example.json
 ```
