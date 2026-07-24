@@ -48,6 +48,34 @@ def session_id(payload: dict) -> str:
     return str(payload.get("session_id") or payload.get("sessionId") or "")
 
 
+def resolve_session_id(given: str) -> str:
+    """Return a non-empty session id, deriving one if the caller passed none.
+
+    Claude Code does not expose the session id to Bash-tool subprocesses
+    (anthropics/claude-code#20132). The /prewalk skill passes "$CLAUDE_SESSION_ID",
+    which is empty unless a SessionStart hook populated it via CLAUDE_ENV_FILE
+    (see export_session_id.py). As a safety net, when the given id is empty we
+    derive it from the most-recently-modified transcript in this project's
+    ~/.claude/projects/<dashed-cwd>/ directory (filename == sessionId)."""
+    given = (given or "").strip()
+    if given:
+        return given
+    import glob
+    cwd = os.getcwd()
+    # Claude Code stores transcripts under ~/.claude/projects/<cwd-with-/-replaced-by-->/
+    # (the leading "/" of an absolute cwd becomes the single leading "-").
+    dashed = cwd.replace("/", "-")
+    proj_dir = os.path.join(os.path.expanduser("~/.claude/projects"), dashed)
+    try:
+        files = sorted(glob.glob(os.path.join(proj_dir, "*.jsonl")),
+                       key=os.path.getmtime, reverse=True)
+    except OSError:
+        files = []
+    if files:
+        return os.path.basename(files[0])[:-6]  # strip .jsonl
+    return ""
+
+
 def normalize_todos(payload: dict) -> list[core.Todo]:
     """Read todos from TodoWrite tool_input (PreToolUse) or tool_response (PostToolUse).
 

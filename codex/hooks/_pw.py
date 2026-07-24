@@ -24,7 +24,7 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 2
     sub = sys.argv[1]
-    session_id = sys.argv[2]
+    session_id = _common.resolve_session_id(sys.argv[2])
     store = _common.store_file()
 
     if sub == "go":

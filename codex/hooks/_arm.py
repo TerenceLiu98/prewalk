@@ -33,8 +33,10 @@ def _parse_args(rest: list[str]) -> tuple[str | None, bool]:
 
 
 def cmd_arm(session_id: str, rest: list[str]) -> int:
+    session_id = _common.resolve_session_id(session_id)
     if not session_id:
-        print("prewalk: cannot arm — no session_id. Pass $CODEX_SESSION_ID.",
+        print("prewalk: cannot arm — could not determine the session id. "
+              "Pass it explicitly: _arm.py arm <session_id> ...",
               file=sys.stderr)
         return 1
     preset_name, auto_swap = _parse_args(rest)

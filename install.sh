@@ -54,6 +54,7 @@ if os.path.exists(path):
 h = existing.get("hooks", {})
 def cmd(p): return f'python3 "{os.path.join(hooks, p)}"'
 for ev, grp in {
+    "SessionStart": [{"hooks":[{"type":"command","command":cmd("export_session_id.py")}]}],
     "Stop": [{"hooks":[{"type":"command","command":cmd("pause_detect.py")}]}],
     "PostToolUse": [{"matcher":"TodoWrite","hooks":[{"type":"command","command":cmd("pause_detect.py")}]}],
     "PreToolUse": [{"matcher":"Write|Edit|MultiEdit","hooks":[{"type":"command","command":cmd("edit_gate.py")}]}],

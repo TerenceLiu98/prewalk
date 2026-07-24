@@ -18,9 +18,12 @@ python3 "<PLUGIN_ROOT>/hooks/_arm.py" arm "$CLAUDE_SESSION_ID" "$ARGUMENTS"
 ```
 
 Replace `<PLUGIN_ROOT>` with the directory containing this skill if the env var
-is unset. The script reads `~/.claude/prewalk-presets.json` (default preset
-`code-value`), prints the chosen planner/executor pair, and tells you which
-model to be on. Add `--no-pause` anywhere in the arguments for auto-swap mode.
+is unset. `$CLAUDE_SESSION_ID` is populated by the SessionStart hook
+(`export_session_id.py`); if it is empty the script falls back to deriving the
+id from the transcript. The script reads `~/.claude/prewalk-presets.json`
+(default preset `code-value`), prints the chosen planner/executor pair, and
+tells you which model to be on. Add `--no-pause` anywhere in the arguments for
+auto-swap mode.
 
 Status / disarm any time with:
 ```bash
