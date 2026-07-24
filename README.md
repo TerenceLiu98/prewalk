@@ -32,14 +32,53 @@ imitation.
 
 ## How the handoff works (per host)
 
-- **Claude Code** — a `PreToolUse` hook rewrites the executor spawn so the
-  `prewalk-executor` subagent runs on the executor model. Claude Code hooks
-  cannot switch the running session's model, but they *can* rewrite a subagent
-  spawn's `model`/`subagent_type`, so the executor is a fresh subagent that
-  inherits the frontier's handoff summary.
-- **Codex** — `/pw-go` instructs the model to run `/model <executor>` itself
-  (the TUI parses queued slash commands); the executor continues in the same
-  thread. For a programmatic switch, drive the app-server `turn/start { model }`.
+Neither host lets a hook switch the *running* session's model, so each host
+hands off through the mechanism it does allow:
+
+**Claude Code** — a `PreToolUse` hook rewrites the executor spawn so the
+`prewalk-executor` subagent runs on the executor model. The executor is a fresh
+subagent that inherits the frontier's handoff summary.
+
+```text
+   main session (opus)                         executor subagent (haiku)
+  ┌─────────────────────┐                     ┌──────────────────────┐
+  │ frontier: explore + │                     │                      │
+  │ plan + task #1 edit │                     │                      │
+  │ + handoff summary   │                     │                      │
+  └─────────┬───────────┘                     │                      │
+            │ /pw-go → spawn ONE Task          │                      │
+            ▼                                 │                      │
+  ┌─────────────────────┐  updatedInput:      │                      │
+  │ PreToolUse hook     │  subagent=executor  │                      │
+  │ (handoff_router)    │  model = haiku  ───▶│ finishes the rest,   │
+  └─────────────────────┘  + handoff prompt   │ one todo at a time   │
+                                              └──────────────────────┘
+```
+
+**Codex** — `/pw-go` instructs the model to run `/model <executor>` itself (the
+TUI parses queued slash commands); the executor continues in the **same thread**.
+For a programmatic switch, drive the app-server `turn/start { model }`.
+
+```text
+   same thread
+  ┌──────────────────────────────────────────────────────┐
+  │  frontier (opus): explore + plan + task #1 edit      │
+  │             │                                        │
+  │             │  /pw-go → instructs: run /model haiku   │
+  │             ▼                                        │
+  │  ===== /model haiku =====  (mid-thread switch)       │
+  │             │                                        │
+  │             ▼                                        │
+  │  executor (haiku): finishes the rest in the SAME     │
+  │                     thread, inheriting the trajectory │
+  │             │                                        │
+  │             ▼  /model opus  (restore when done)       │
+  └──────────────────────────────────────────────────────┘
+```
+
+So the trade-off is **context**: Claude Code's executor is a fresh subagent
+guided by a handoff *summary*; Codex's executor keeps the full *trajectory* in
+the same thread.
 
 ## Install
 
