@@ -36,6 +36,7 @@ from typing import Any, Callable, Iterable
 IDLE = "idle"
 FRONTIER = "frontier"
 PAUSED = "paused"
+READY = "ready"        # v0.2: frontier landed its first edit; handoff-armed
 EXECUTOR = "executor"
 RESTORING = "restoring"
 
@@ -123,6 +124,8 @@ class PrewalkState:
     frontier_todos_ever_seen: bool = False
     todos_remaining: int = 0
     blocked_edits: int = 0
+    first_edit_landed: bool = False  # frontier has completed its one verified edit
+    handoff_done: bool = False       # executor subagent has been spawned at least once
     original_model: str = ""         # planner model, to restore after executor finishes
     executor_model: str = ""         # model the /pw-go handoff should switch to
     created_turn: int = 0            # informational
