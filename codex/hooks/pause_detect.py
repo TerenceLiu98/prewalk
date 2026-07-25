@@ -34,10 +34,11 @@ def main() -> int:
     state = core.load_state(store, sid)
 
     # If we have todos and an active run, drive the checkpoint machine; the
-    # result may transition frontier→paused (and, in auto_swap, perform the
-    # switch — but Codex can't switch from a hook, so auto_swap instead returns
-    # a guidance reason instructing /model).
-    if todos and state is not None and state.phase in (core.FRONTIER, core.PAUSED, core.EXECUTOR):
+    # result may transition frontier→paused. Codex cannot switch models from a
+    # hook, so --no-pause does not provide an automatic Codex handoff.
+    if todos and state is not None and state.phase in (
+        core.FRONTIER, core.READY, core.PAUSED, core.EXECUTOR
+    ):
         action = core.on_todos_changed(store, sid, todos)
         _common.emit(action, event="Stop")
         return 0

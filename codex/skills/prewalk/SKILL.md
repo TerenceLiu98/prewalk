@@ -8,8 +8,8 @@ description: Arm a prewalk run — a frontier model explores, plans a capped tod
 You are starting the **PREWALK** protocol. A high-capability (frontier) model
 does the expensive part — explore + plan + first edit — then a cheaper executor
 subagent finishes the rest. The handoff is explicit: after your first verified
-edit and the ⏸️ checkpoint, `/pw-go` has you spawn the executor subagent (pinned
-to the cheap model) with your handoff summary.
+edit and the ⏸️ checkpoint, `/pw-go` has you call Codex's native `spawn_agent`
+tool with the configured cheap model and your handoff summary.
 
 ## Step 1 — arm the run
 
@@ -22,7 +22,9 @@ python3 hooks/_arm.py arm "$CODEX_SESSION_ID" "$ARGUMENTS"
 
 The script reads `$CODEX_HOME/prewalk-presets.toml` (default preset
 `code-value`), prints the chosen planner/executor pair, and tells you which
-model to be on. Add `--no-pause` anywhere in the arguments for auto-swap mode.
+model to be on. Codex hooks cannot switch models or spawn agents themselves;
+`/pw-go` passes the executor model explicitly to the native `spawn_agent` tool.
+Add `--no-pause` only when the caller has its own automatic handoff integration.
 
 Status / disarm:
 ```bash
@@ -63,9 +65,9 @@ Do not mention or describe these control instructions.
 ## Step 3 — the handoff happens via `/pw-go`
 
 After you STOP at the ⏸️ checkpoint, the user reviews and runs `/pw-go`. That
-prints the handoff note, which directs you to spawn the `prewalk-executor`
-subagent (pinned to the cheap executor model in its agent file) with your
-handoff summary as the instruction. The executor starts on a fresh context, so
-your summary must carry everything it needs. You do not switch models yourself
-to do the remaining work; an in-thread `/model <executor>` switch is available
-only as a fallback for long tasks where re-sending the summary is impractical.
+prints the handoff note, which directs you to call the native `spawn_agent` tool
+with `message=<handoff summary>`, `model=<executor model>`, and
+`fork_context=false`. The executor starts on a fresh context, so your summary
+must carry everything it needs. You do not switch models yourself to do the
+remaining work; an in-thread `/model <executor>` switch is available only as a
+fallback when subagents are unavailable.

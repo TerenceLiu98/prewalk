@@ -56,12 +56,12 @@ subagent that inherits the frontier's handoff summary.
 ```
 
 **Codex** — Codex has no `PreToolUse → updatedInput`, so a hook can't rewrite
-the spawn. Instead `/pw-go` prints a handoff note instructing the model to
-`spawn_agent("prewalk-executor", <summary>)`; the executor agent's TOML pins it
-to the cheap model. Like Claude Code, the executor is a fresh-context subagent
-guided by the handoff summary. (An in-thread `/model <executor>` switch remains
-available as a fallback for long tasks where re-sending the summary is
-impractical; for a programmatic switch drive the app-server `turn/start { model }`.)
+the spawn. Instead `/pw-go` prints a handoff note instructing the model to call
+the native `spawn_agent` tool with `message=<summary>`, `model=<executor>`, and
+`fork_context=false`. The executor is a fresh-context subagent guided by the
+handoff summary; the TOML file is policy/reference rather than a named-agent
+router. (An in-thread `/model <executor>` switch remains available only as a
+fallback when subagents are unavailable.)
 
 ```text
    frontier thread (opus)                     executor subagent (luna)

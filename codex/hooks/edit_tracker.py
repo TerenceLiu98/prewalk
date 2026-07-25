@@ -33,12 +33,17 @@ def main() -> int:
     if state is None or state.phase != core.FRONTIER:
         return 0  # not arming, or already past frontier
 
-    # Only count successful edits.
-    tool_response = payload.get("tool_response") or {}
+    # Only count successful edits. Codex payloads have used both `ok` and
+    # `success`; do not treat a missing post-tool response as a successful edit.
+    tool_response = payload.get("tool_response")
     ok = False
     if isinstance(tool_response, dict):
-        # apply_patch returns {ok, file, ...} or an error; treat absence of error as ok.
-        ok = not str(tool_response.get("error", "")).strip() or tool_response.get("ok", True) is not False
+        ok = (
+            tool_response.get("ok", True) is not False
+            and tool_response.get("success", True) is not False
+            and tool_response.get("executed", True) is not False
+            and not str(tool_response.get("error", "")).strip()
+        )
     if not ok:
         return 0
 

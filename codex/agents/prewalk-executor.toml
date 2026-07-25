@@ -1,12 +1,12 @@
 # Codex subagent for prewalk executor (v0.2).
 #
-# This is the DEFAULT handoff target: spawned by /pw-go via spawn_agent with the
-# frontier's handoff summary as instruction. The executor runs on a pinned cheap
-# model and starts with a FRESH context, receiving only the handoff SUMMARY the
-# frontier model writes. Edit the model below to a cheap model your install resolves.
+# This file documents the executor policy. Codex's native spawn_agent tool does
+# not resolve plugin agent files by name, so /pw-go passes this model explicitly
+# and supplies the instructions in the spawn message. Keep this file in sync
+# with that policy for humans and future Codex runtimes.
 #
-# Spawn from the parent agent via spawn_agent(name="prewalk-executor", ...) with
-# the frontier's handoff summary as the instruction.
+# Spawn from the parent agent via spawn_agent(message=..., model=...,
+# fork_context=false).
 
 model = "gpt-5.6-luna"
 effort = "xhigh"

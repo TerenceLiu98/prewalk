@@ -7,9 +7,10 @@ _shared/prewalk_core.py: it resolves the store/preset files, normalizes the host
 todo shape, and renders the core HookAction into Codex's hook output contract.
 
 Codex cannot rewrite the next request from a hook (no updatedInput), so the v0.2
-handoff uses spawn_agent: the /pw-go skill prints guidance instructing the model
-to spawn the executor subagent, which is pinned to the cheap model in its agent
-file and starts on a fresh context with the handoff summary as instruction.
+handoff uses the native spawn_agent tool: the /pw-go skill prints guidance
+instructing the model to pass the executor model explicitly and start a fresh
+context with the handoff summary as instruction. The bundled agent TOML is
+policy/reference only; Codex does not resolve it as a named spawn target.
 """
 
 from __future__ import annotations

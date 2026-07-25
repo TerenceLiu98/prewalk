@@ -13,11 +13,12 @@ Claude Code version. Installed via the Codex **marketplace**.
 Codex hooks/MCP tools **cannot** rewrite the next request (no updatedInput),
 so Claude Code's automatic hook-routed Task rewrite cannot be ported. The
 confirmed bridge: `/pw-go` injects a handoff note instructing the model to
-`spawn_agent("prewalk-executor", <handoff summary>)`. The executor subagent
-is pinned to the cheap executor model in its agent file and starts on a fresh
-context, receiving the handoff summary as its instruction. An in-thread
-`/model <executor>` switch is kept as a fallback for long tasks where
-re-sending the summary is impractical.
+call the native `spawn_agent` tool with `message=<summary>`,
+`model=<executor>`, and `fork_context=false`. The executor starts on a fresh
+context and receives the handoff summary as its instruction. An in-thread
+`/model <executor>` switch is kept only as a fallback when subagents are
+unavailable. The TOML agent file documents the policy but is not a named-agent
+router in Codex.
 
 ## Install
 
@@ -68,8 +69,8 @@ $prewalk <task>           → arms the run (frontier model)
                             verify-word), completes ONLY task #1 + verifies it,
                             writes a handoff summary, stops
   (you review)
-/pw-go                    → prints the handoff note; model spawns the executor
-                            subagent (pinned to cheap model) with the summary
+/pw-go                    → prints the handoff note; model calls native
+                            spawn_agent with explicit executor model + summary
   executor (cheap model)  → finishes the remaining todos in order on a fresh
                             context, then reports completion
 ```
@@ -121,7 +122,7 @@ codex/
 │   ├── todo_tracker.py                # PostToolUse logic (todos)
 │   └── _shared/prewalk_core.py
 ├── skills/{prewalk,pw-go,pw-revise}/SKILL.md
-├── agents/prewalk-executor.toml       # cheap-model executor subagent
+├── agents/prewalk-executor.toml       # executor policy/reference
 └── presets.example.toml
 ```
 (Plus `../.agents/plugins/marketplace.json` at the repo root — the marketplace
