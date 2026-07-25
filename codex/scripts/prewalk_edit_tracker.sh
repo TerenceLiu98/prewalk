@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex prewalk hook wrapper — PreToolUse event (edit gate on apply_patch).
+# Codex prewalk hook wrapper — PostToolUse event (edit tracker on apply_patch).
 # Codex runs hook `command`s with cwd = plugin root, and sets PLUGIN_ROOT.
 set -euo pipefail
 
@@ -9,4 +9,4 @@ else
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
-exec python3 "$ROOT/hooks/edit_gate.py"
+exec python3 "$ROOT/hooks/edit_tracker.py"

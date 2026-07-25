@@ -481,14 +481,22 @@ def on_todos_changed(
     return HookAction(system_message="prewalk: plan updated — `/pw-go` to hand off, or `/pw-revise <changes>` again.")
 
 
-def on_pw_go(store_file: str | os.PathLike[str], session_id: str) -> HookAction:
+def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str = "claude") -> HookAction:
     """`/pw-go` was invoked — user confirms the handoff.
 
     Valid in the frontier or ready phase (the run is armed and the frontier has
-    done its part). In the new subagent-routing architecture the model cannot
-    switch its own model, so we instruct it to SPAWN a Task for the remaining
-    work; the host's PreToolUse handoff hook rewrites that spawn onto the
-    executor model. Returns a no-checkpoint message if nothing is armed."""
+    done its part). Both hosts hand off by spawning a fresh-context executor
+    subagent pinned to the executor model, but the *mechanism* differs, so the
+    handoff note is host-specific:
+
+    - ``host="claude"``: the model spawns ONE Task (Agent tool); the host's
+      PreToolUse ``handoff_router`` hook rewrites that spawn onto the executor
+      model automatically.
+    - ``host="codex"``: Codex has no ``updatedInput``, so no hook can rewrite
+      the spawn. The model itself calls ``spawn_agent("prewalk-executor", ...)``
+      (the agent's TOML pins it to the executor model).
+
+    Returns a no-checkpoint message if nothing is armed."""
     state = load_state(store_file, session_id)
     if state is None or state.phase not in (FRONTIER, READY, PAUSED):
         return HookAction(
@@ -504,17 +512,29 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str) -> HookAction:
                 "executor subagent; do not spawn another handoff."
             )
         )
-    # Keep phase as-is (ready or frontier); the handoff hook flips it to executor
-    # when it rewrites the spawn. Tell the model to spawn the Task now.
-    return HookAction(
-        additional_context=(
-            f"{HANDOFF_NOTE}\n\n"
+    # Keep phase as-is (ready or frontier); the handoff hook (Claude) or the
+    # executor's own completion detection (Codex) flips it to executor.
+    if host == "codex":
+        action_line = (
+            f"ACTION: hand off now by calling spawn_agent(\"prewalk-executor\", <your handoff summary>) "
+            f"— the files you read, the full todo/plan, what task #1 proved, and exactly what remains. "
+            f"The executor agent is pinned to the {state.executor_model} model in its agent file and starts "
+            f"on a fresh context inheriting only your summary, so make the summary self-contained. Do not "
+            f"do the remaining edits in this session. (An in-thread `/model {state.executor_model}` switch "
+            f"is a fallback only for long tasks where re-sending the summary is impractical.)"
+        )
+        sysmsg = f"prewalk: handoff requested — spawn_agent(\"prewalk-executor\") for the remaining work (executor {state.executor_model})."
+    else:
+        action_line = (
             f"ACTION: hand off now by spawning ONE Task (Agent tool) whose prompt is your handoff "
             f"summary — the files you read, the full todo/plan, what task #1 proved, and exactly what "
             f"remains. The prewalk hook will automatically route that Task onto the {state.executor_model} "
             f"executor. Do not switch models yourself; do not do the remaining edits in this session."
-        ),
-        system_message=f"prewalk: handoff requested — spawn a Task for the remaining work (executor {state.executor_model}).",
+        )
+        sysmsg = f"prewalk: handoff requested — spawn a Task for the remaining work (executor {state.executor_model})."
+    return HookAction(
+        additional_context=f"{HANDOFF_NOTE}\n\n{action_line}",
+        system_message=sysmsg,
     )
 
 

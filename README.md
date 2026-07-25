@@ -55,30 +55,34 @@ subagent that inherits the frontier's handoff summary.
                                               └──────────────────────┘
 ```
 
-**Codex** — `/pw-go` instructs the model to run `/model <executor>` itself (the
-TUI parses queued slash commands); the executor continues in the **same thread**.
-For a programmatic switch, drive the app-server `turn/start { model }`.
+**Codex** — Codex has no `PreToolUse → updatedInput`, so a hook can't rewrite
+the spawn. Instead `/pw-go` prints a handoff note instructing the model to
+`spawn_agent("prewalk-executor", <summary>)`; the executor agent's TOML pins it
+to the cheap model. Like Claude Code, the executor is a fresh-context subagent
+guided by the handoff summary. (An in-thread `/model <executor>` switch remains
+available as a fallback for long tasks where re-sending the summary is
+impractical; for a programmatic switch drive the app-server `turn/start { model }`.)
 
 ```text
-   same thread
-  ┌──────────────────────────────────────────────────────┐
-  │  frontier (opus): explore + plan + task #1 edit      │
-  │             │                                        │
-  │             │  /pw-go → instructs: run /model haiku   │
-  │             ▼                                        │
-  │  ===== /model haiku =====  (mid-thread switch)       │
-  │             │                                        │
-  │             ▼                                        │
-  │  executor (haiku): finishes the rest in the SAME     │
-  │                     thread, inheriting the trajectory │
-  │             │                                        │
-  │             ▼  /model opus  (restore when done)       │
-  └──────────────────────────────────────────────────────┘
+   frontier thread (opus)                     executor subagent (luna)
+  ┌─────────────────────┐                     ┌──────────────────────┐
+  │ frontier: explore + │                     │                      │
+  │ plan + task #1 edit │                     │                      │
+  │ + handoff summary   │                     │                      │
+  └─────────┬───────────┘                     │                      │
+            │ /pw-go → handoff note           │                      │
+            ▼   "spawn_agent(prewalk-executor)"│                      │
+  ┌─────────────────────┐  spawn_agent:       │                      │
+  │ model runs the      │  agent=executor     │                      │
+  │ spawn_agent call    │  (model pinned ────▶│ finishes the rest,   │
+  │ itself              │   in the toml)      │ one todo at a time   │
+  └─────────────────────┘  + handoff summary  └──────────────────────┘
 ```
 
-So the trade-off is **context**: Claude Code's executor is a fresh subagent
-guided by a handoff *summary*; Codex's executor keeps the full *trajectory* in
-the same thread.
+So on **both** hosts the executor is a fresh-context subagent guided by a
+handoff *summary*. The only difference is *who issues the spawn*: Claude Code's
+hook rewrites it automatically; Codex's model issues `spawn_agent` itself from
+the `/pw-go` handoff note.
 
 ## Install
 
@@ -145,8 +149,8 @@ prewalk/
 ├── codex/                             # Codex plugin
 │   ├── .codex-plugin/plugin.json
 │   ├── hooks/  hooks.json  _bootstrap _common _arm _pw
-│   │           pause_detect  edit_gate  _shared/
-│   ├── scripts/  prewalk_pause.sh  prewalk_edit_gate.sh
+│   │           pause_detect  edit_tracker  todo_tracker  _shared/
+│   ├── scripts/  prewalk_pause.sh  prewalk_edit_tracker.sh  prewalk_todo_tracker.sh
 │   ├── skills/{prewalk,pw-go,pw-revise}/SKILL.md
 │   ├── agents/prewalk-executor.toml
 │   └── presets.example.toml

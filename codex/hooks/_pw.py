@@ -28,7 +28,7 @@ def main() -> int:
     store = _common.store_file()
 
     if sub == "go":
-        action = core.on_pw_go(store, session_id)
+        action = core.on_pw_go(store, session_id, host="codex")
         print(action.additional_context or action.system_message)
         if action.system_message:
             print()

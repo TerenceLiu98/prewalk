@@ -10,12 +10,14 @@ Claude Code version. Installed via the Codex **marketplace**.
 
 ## The handoff mechanism
 
-Codex hooks/MCP tools **cannot** switch the thread model — there is no such API.
-So `/pw-go` injects a handoff note instructing the model to run `/model <executor>`
-itself; the TUI parses queued slash commands, and the executor continues in the
-same thread. For a programmatic switch, drive the app-server and pass `model` to
-`turn/start` (becomes the thread default), or script
-`codex exec resume --last --model <executor>`.
+Codex hooks/MCP tools **cannot** rewrite the next request (no updatedInput),
+so Claude Code's automatic hook-routed Task rewrite cannot be ported. The
+confirmed bridge: `/pw-go` injects a handoff note instructing the model to
+`spawn_agent("prewalk-executor", <handoff summary>)`. The executor subagent
+is pinned to the cheap executor model in its agent file and starts on a fresh
+context, receiving the handoff summary as its instruction. An in-thread
+`/model <executor>` switch is kept as a fallback for long tasks where
+re-sending the summary is impractical.
 
 ## Install
 
@@ -48,7 +50,7 @@ codex plugin marketplace remove prewalk-marketplace
 ```
 $prewalk Add a settings page with tabbed sections
 ... frontier explores, writes a capped todo, completes task #1, writes a handoff summary ...
-/pw-go                  # switch to the executor model and finish
+/pw-go                  # spawn the executor subagent (cheap model)
 /pw-revise <changes>    # revise the plan on the frontier instead
 ```
 
@@ -66,23 +68,32 @@ $prewalk <task>           → arms the run (frontier model)
                             verify-word), completes ONLY task #1 + verifies it,
                             writes a handoff summary, stops
   (you review)
-/pw-go                    → injects the handoff note; you run /model <executor>
-  executor (cheap model)  → finishes the remaining todos in order, inheriting
-                            the thread; /model <planner> restores when done
+/pw-go                    → prints the handoff note; model spawns the executor
+                            subagent (pinned to cheap model) with the summary
+  executor (cheap model)  → finishes the remaining todos in order on a fresh
+                            context, then reports completion
 ```
 
 Hooks (`hooks/hooks.json`):
 - **Stop** → `pause_detect.py`: detects the frontier's handoff point and the
-  executor's completion (restore the planner).
-- **PreToolUse** (`apply_patch|Edit|Write`) → `edit_gate.py`: keeps edits ordered
-  behind a valid capped todo list during the frontier phase.
+  executor's completion.
+- **PostToolUse** (`update_plan|todo`) → `todo_tracker.py`: tracks todo list
+  progress and completion.
+- **PostToolUse** (`apply_patch|Edit|Write`) → `edit_tracker.py`: observes the
+  first successful edit to mark the run handoff-ready.
+
+There is intentionally no `PreToolUse` hook: unlike Claude Code (whose
+`PreToolUse` `handoff_router` rewrites the executor spawn via `updatedInput`),
+Codex has no `updatedInput` capability, so there is nothing to intercept before
+a tool runs. The edit observation lives on `PostToolUse`, where the tool's
+success/failure result is available.
 
 `$prewalk`, `/pw-go`, `/pw-revise` are skills that call the Python helpers in
 `hooks/` (`_arm.py`, `_pw.py`). The hooks are invoked through
 `scripts/prewalk_*.sh` wrappers (Codex runs a plugin hook with cwd = plugin root).
 
-> **Codex hook coverage:** `PreToolUse` only intercepts "simple" shell calls and
-> file-edit tools (`apply_patch`), not every command or `WebSearch`.
+> **Codex hook coverage:** `PreToolUse`/`PostToolUse` only intercept "simple"
+> shell calls and file-edit tools (`apply_patch`), not every command or `WebSearch`.
 
 ## Notes
 
@@ -98,14 +109,16 @@ codex/
 ├── hooks.json                         # hook registration
 ├── scripts/
 │   ├── prewalk_pause.sh               # Stop hook wrapper
-│   └── prewalk_edit_gate.sh           # PreToolUse wrapper
+│   ├── prewalk_edit_tracker.sh       # PostToolUse wrapper (edits)
+│   └── prewalk_todo_tracker.sh        # PostToolUse wrapper (todos)
 ├── hooks/
 │   ├── _bootstrap.py                  # locates prewalk_core.py from any layout
 │   ├── _common.py                     # host I/O shim
 │   ├── _arm.py                        # $prewalk helper: arm/status/disarm
 │   ├── _pw.py                         # /pw-go + /pw-revise helper
 │   ├── pause_detect.py                # Stop hook logic
-│   ├── edit_gate.py                   # PreToolUse logic
+│   ├── edit_tracker.py                # PostToolUse logic (edits)
+│   ├── todo_tracker.py                # PostToolUse logic (todos)
 │   └── _shared/prewalk_core.py
 ├── skills/{prewalk,pw-go,pw-revise}/SKILL.md
 ├── agents/prewalk-executor.toml       # cheap-model executor subagent

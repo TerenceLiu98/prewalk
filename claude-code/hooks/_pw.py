@@ -28,7 +28,7 @@ def main() -> int:
     store = _common.store_file()
 
     if sub == "go":
-        action = core.on_pw_go(store, session_id)
+        action = core.on_pw_go(store, session_id, host="claude")
         # on_pw_go always returns an action (handoff note or no-checkpoint msg).
         # For the handoff case additional_context holds the note; otherwise it
         # holds the no-checkpoint message.

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Shared I/O helpers for the Codex prewalk hooks.
 
-Both entry scripts (pause_detect.py on Stop, edit_gate.py on PreToolUse) import
-from here. This module is a thin shim over _shared/prewalk_core.py: it resolves
-the store/preset files, normalizes the host's todo shape, and renders the core
-HookAction into Codex's hook output contract.
+All entry scripts (pause_detect.py on Stop, edit_tracker.py on PostToolUse,
+todo_tracker.py on PostToolUse) import from here. This module is a thin shim over
+_shared/prewalk_core.py: it resolves the store/preset files, normalizes the host's
+todo shape, and renders the core HookAction into Codex's hook output contract.
 
-Codex cannot switch the model from a hook/MCP tool — there is no such API. So at
-the paused checkpoint we surface guidance whose `reason` instructs the model to
-run `/model <executor>`; Codex's TUI parses queued slash commands. (Alternatively
-drive the app-server `turn/start { model }`.) See README "Style A".
+Codex cannot rewrite the next request from a hook (no updatedInput), so the v0.2
+handoff uses spawn_agent: the /pw-go skill prints guidance instructing the model
+to spawn the executor subagent, which is pinned to the cheap model in its agent
+file and starts on a fresh context with the handoff summary as instruction.
 """
 
 from __future__ import annotations

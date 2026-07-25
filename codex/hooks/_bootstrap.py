@@ -1,10 +1,10 @@
 """Locate prewalk_core.py regardless of install layout.
 
-Imported by every hook/helper script (pause_detect, edit_gate, _arm, _pw) so they
-all share one path-resolution strategy. This is what makes the plugin installable
-from GitHub (via `codex plugin install <repo>`) or as loose files: the core engine
-is found whether it lives at <repo>/_shared, inside a vendored hooks/_shared, or
-under PLUGIN_ROOT.
+Imported by every hook/helper script (pause_detect, edit_tracker, todo_tracker,
+_arm, _pw) so they all share one path-resolution strategy. This is what makes the
+plugin installable from GitHub (via `codex plugin install <repo>`) or as loose
+files: the core engine is found whether it lives at <repo>/_shared, inside a
+vendored hooks/_shared, or under PLUGIN_ROOT.
 
 Usage at the top of a script, before `import prewalk_core`:
 
