@@ -24,7 +24,9 @@ The script reads `$CODEX_HOME/prewalk-presets.toml` (default preset
 `code-value`), prints the chosen planner/executor pair, and tells you which
 model to be on. Codex hooks cannot switch models or spawn agents themselves;
 `/pw-go` passes the executor model explicitly to the native `spawn_agent` tool.
-Add `--no-pause` only when the caller has its own automatic handoff integration.
+Put `--preset <name>` or `--no-pause` before the task text when needed. Presets
+are never inferred from task words. Add `--no-pause` only when the caller has
+its own automatic handoff integration.
 
 Status / disarm:
 ```bash

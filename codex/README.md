@@ -55,6 +55,10 @@ $prewalk Add a settings page with tabbed sections
 /pw-revise <changes>    # revise the plan on the frontier instead
 ```
 
+Options must precede task text: use `--preset <name>` to select a preset and
+`--no-pause` only for an external automatic-handoff integration. Freeform task
+words are never interpreted as preset names.
+
 Status / disarm:
 ```sh
 python3 <plugin>/hooks/_arm.py status "$CODEX_SESSION_ID"
@@ -100,7 +104,9 @@ success/failure result is available.
 
 - Edit the planner/executor models in `~/.codex/prewalk-presets.toml` to what
   your Codex install resolves (run `/model` in Codex to see ids).
-- Per-session state lives in `~/.codex/prewalk-state.json`.
+- Per-session state lives in `~/.codex/prewalk-state.json`. Hook processes
+  coordinate through a sidecar lock; malformed JSON is preserved as
+  `prewalk-state.json.corrupt` and the next update starts cleanly.
 
 ## Layout
 

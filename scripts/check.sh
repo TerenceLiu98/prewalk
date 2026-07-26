@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+cmp _shared/prewalk_core.py codex/hooks/_shared/prewalk_core.py
+cmp _shared/prewalk_core.py claude-code/hooks/_shared/prewalk_core.py
+
+python3 -m compileall -q _shared codex/hooks claude-code/hooks tests
+python3 -m unittest discover -s tests -v
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+for path in (
+    Path(".claude-plugin/marketplace.json"),
+    Path(".agents/plugins/marketplace.json"),
+    Path("claude-code/.claude-plugin/plugin.json"),
+    Path("claude-code/hooks/hooks.json"),
+    Path("claude-code/presets.example.json"),
+    Path("claude-code/settings.example.json"),
+    Path("codex/.codex-plugin/plugin.json"),
+    Path("codex/hooks.json"),
+):
+    with path.open(encoding="utf-8") as handle:
+        json.load(handle)
+PY
+
+bash -n install.sh codex/scripts/prewalk_pause.sh \
+  codex/scripts/prewalk_edit_tracker.sh codex/scripts/prewalk_todo_tracker.sh
+
+for script in codex/scripts/*.sh; do
+  test -x "$script"
+done
+
+CHECK_TMP="$(mktemp -d)"
+trap 'rm -rf "$CHECK_TMP"' EXIT
+
+./install.sh claude-code "$CHECK_TMP/claude" >/dev/null
+./install.sh claude-code "$CHECK_TMP/claude" >/dev/null
+./install.sh codex "$CHECK_TMP/codex" >/dev/null
+
+python3 - "$CHECK_TMP" "$ROOT" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+tmp = Path(sys.argv[1])
+root = Path(sys.argv[2])
+settings = json.loads((tmp / "claude" / "settings.json").read_text(encoding="utf-8"))
+hooks = settings["hooks"]
+assert len(hooks["SessionStart"]) == 1
+assert [group["matcher"] for group in hooks["PostToolUse"]] == [
+    "TodoWrite|TaskCreate|TaskUpdate|TaskList",
+    "Write|Edit|MultiEdit",
+]
+assert [group["matcher"] for group in hooks["PreToolUse"]] == ["Task"]
+
+for skill in (tmp / "claude" / "skills").glob("*/SKILL.md"):
+    text = skill.read_text(encoding="utf-8")
+    assert "<PLUGIN_ROOT>" not in text
+    assert "${CLAUDE_PLUGIN_ROOT}" not in text
+    assert str(root / "claude-code") in text
+
+assert (tmp / "claude" / "prewalk-presets.json").is_file()
+assert (tmp / "codex" / "prewalk-presets.toml").is_file()
+PY
+
+git diff --check
+echo "prewalk checks passed"

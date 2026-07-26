@@ -79,37 +79,101 @@ def resolve_session_id(given: str) -> str:
     return ""
 
 
+def _event_part(payload: dict, snake_name: str, camel_name: str):
+    if snake_name in payload:
+        return payload[snake_name]
+    return payload.get(camel_name)
+
+
+def _todo_items(holder) -> list[dict]:
+    """Find a todo list through the small set of wrappers used by hook tools."""
+    if isinstance(holder, str):
+        try:
+            holder = json.loads(holder)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(holder, list):
+        return [item for item in holder if _looks_like_todo(item)]
+    if not isinstance(holder, dict):
+        return []
+    for key in ("todos", "tasks", "plan", "items", "steps"):
+        if isinstance(holder.get(key), list):
+            return [item for item in holder[key] if _looks_like_todo(item)]
+    for key in ("result", "output", "data", "structured_content", "structuredContent"):
+        items = _todo_items(holder.get(key))
+        if items:
+            return items
+    return []
+
+
+def _looks_like_todo(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    has_content = any(
+        key in item for key in ("content", "text", "step", "subject", "description", "title")
+    )
+    has_identity_or_status = any(key in item for key in ("id", "uuid", "status", "state"))
+    return has_content and has_identity_or_status
+
+
+def _item_to_todo(item: dict) -> core.Todo:
+    content = str(
+        item.get("content")
+        or item.get("text")
+        or item.get("step")
+        or item.get("subject")
+        or item.get("description")
+        or item.get("title")
+        or ""
+    )
+    status = str(item.get("status") or item.get("state") or "").lower()
+    return core.Todo(
+        id=str(item.get("id") or item.get("uuid") or content[:40]),
+        content=content,
+        status=status,
+    )
+
+
 def normalize_todos(payload: dict) -> list[core.Todo]:
     """Read todos from tool_input (PreToolUse) or tool_response (PostToolUse/Stop).
 
     Codex's plan/todo tool carries items as dicts. Field names vary by tool
     (`update_plan` vs `todo`); we accept content/status under common keys."""
-    src = None
-    ti = payload.get("tool_input") or {}
-    if isinstance(ti, dict):
-        for key in ("todos", "plan", "items", "steps"):
-            if isinstance(ti.get(key), list):
-                src = ti[key]
-                break
-    if src is None:
-        tr = payload.get("tool_response") or {}
-        if isinstance(tr, dict):
-            for key in ("todos", "plan", "items", "steps"):
-                if isinstance(tr.get(key), list):
-                    src = tr[key]
-                    break
-        elif isinstance(tr, list):
-            src = tr
-    if not src:
-        return []
-    out = []
-    for item in src:
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content") or item.get("text") or item.get("step") or "")
-        status = str(item.get("status") or item.get("state") or "")
-        out.append(core.Todo(id=str(item.get("id") or content[:40]), content=content, status=status))
-    return out
+    for holder in (
+        _event_part(payload, "tool_input", "toolInput"),
+        _event_part(payload, "tool_response", "toolResponse"),
+    ):
+        items = _todo_items(holder)
+        if items:
+            return [_item_to_todo(item) for item in items]
+    return []
+
+
+def normalize_edit_success(payload: dict) -> bool:
+    """Return whether a PostToolUse edit payload represents a successful edit."""
+    response = _event_part(payload, "tool_response", "toolResponse")
+    if response is None or response is False:
+        return False
+    return not _has_explicit_failure(response)
+
+
+def _has_explicit_failure(value) -> bool:
+    if isinstance(value, list):
+        return any(_has_explicit_failure(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    if value.get("is_error") is True or value.get("isError") is True:
+        return True
+    if any(value.get(key) is False for key in ("ok", "success", "executed")):
+        return True
+    if value.get("error"):
+        return True
+    if str(value.get("status", "")).lower() in ("error", "failed", "failure"):
+        return True
+    return any(
+        _has_explicit_failure(value.get(key))
+        for key in ("result", "output", "data", "structured_content", "structuredContent")
+    )
 
 
 def emit(action: core.HookAction | None, *, event: str, deny_as_permission: bool = False) -> None:

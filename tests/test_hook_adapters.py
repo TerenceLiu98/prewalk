@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import sys
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_common(host: str):
+    hooks = ROOT / host / "hooks"
+    saved_modules = {
+        name: sys.modules.pop(name, None)
+        for name in ("_bootstrap", "prewalk_core")
+    }
+    sys.path.insert(0, str(hooks))
+    try:
+        spec = importlib.util.spec_from_file_location(f"{host}_common", hooks / "_common.py")
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+        for name in ("_bootstrap", "prewalk_core"):
+            sys.modules.pop(name, None)
+        sys.modules.update({name: value for name, value in saved_modules.items() if value})
+
+
+class HookAdapterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.codex = load_common("codex")
+        cls.claude = load_common("claude-code")
+
+    def test_codex_update_plan_input(self) -> None:
+        payload = {
+            "session_id": "codex-session",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "functions.update_plan",
+            "tool_input": {
+                "explanation": "Implement in order",
+                "plan": [
+                    {"step": "Patch adapter and test it", "status": "in_progress"},
+                    {"step": "Run build checks", "status": "pending"},
+                ],
+            },
+            "tool_response": {"ok": True},
+        }
+        todos = self.codex.normalize_todos(payload)
+        self.assertEqual([todo.content for todo in todos], [
+            "Patch adapter and test it",
+            "Run build checks",
+        ])
+        self.assertEqual([todo.status for todo in todos], ["in_progress", "pending"])
+
+    def test_claude_todowrite_input(self) -> None:
+        payload = {
+            "session_id": "claude-session",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "TodoWrite",
+            "tool_input": {
+                "todos": [
+                    {
+                        "content": "Patch adapter and test it",
+                        "status": "in_progress",
+                        "activeForm": "Patching adapter",
+                    }
+                ]
+            },
+            "tool_response": {"success": True},
+        }
+        todos = self.claude.normalize_todos(payload)
+        self.assertEqual(len(todos), 1)
+        self.assertEqual(todos[0].content, "Patch adapter and test it")
+        self.assertEqual(todos[0].status, "in_progress")
+
+    def test_nested_task_list_response_and_camel_case_envelope(self) -> None:
+        payload = {
+            "sessionId": "session",
+            "toolInput": {},
+            "toolResponse": {
+                "result": {
+                    "tasks": [
+                        {"uuid": "task-1", "subject": "Run build checks", "state": "COMPLETED"}
+                    ]
+                }
+            },
+        }
+        for adapter in (self.codex, self.claude):
+            with self.subTest(adapter=adapter.__name__):
+                todos = adapter.normalize_todos(payload)
+                self.assertEqual(len(todos), 1)
+                self.assertEqual(todos[0].id, "task-1")
+                self.assertEqual(todos[0].content, "Run build checks")
+                self.assertEqual(todos[0].status, "completed")
+
+    def test_generic_content_blocks_are_not_todos(self) -> None:
+        payload = {
+            "tool_input": {},
+            "tool_response": [{"type": "text", "text": "Plan updated"}],
+        }
+        for adapter in (self.codex, self.claude):
+            with self.subTest(adapter=adapter.__name__):
+                self.assertEqual(adapter.normalize_todos(payload), [])
+
+    def test_successful_edit_payloads(self) -> None:
+        fixtures = [
+            {"tool_response": {"filePath": "/tmp/example", "success": True}},
+            {"tool_response": {"output": {"executed": True}}},
+            {"toolResponse": [{"type": "text", "text": "Applied patch"}]},
+        ]
+        for adapter in (self.codex, self.claude):
+            for payload in fixtures:
+                with self.subTest(adapter=adapter.__name__, payload=payload):
+                    self.assertTrue(adapter.normalize_edit_success(payload))
+
+    def test_failed_or_missing_edit_payloads(self) -> None:
+        fixtures = [
+            {},
+            {"tool_response": None},
+            {"tool_response": False},
+            {"tool_response": {"success": False}},
+            {"tool_response": {"error": "permission denied"}},
+            {"tool_response": {"result": {"is_error": True}}},
+        ]
+        for adapter in (self.codex, self.claude):
+            for payload in fixtures:
+                with self.subTest(adapter=adapter.__name__, payload=payload):
+                    self.assertFalse(adapter.normalize_edit_success(payload))
+
+
+if __name__ == "__main__":
+    unittest.main()

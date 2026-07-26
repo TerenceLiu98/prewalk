@@ -76,6 +76,43 @@ def resolve_session_id(given: str) -> str:
     return ""
 
 
+def _event_part(payload: dict, snake_name: str, camel_name: str):
+    if snake_name in payload:
+        return payload[snake_name]
+    return payload.get(camel_name)
+
+
+def _todo_items(holder) -> list[dict]:
+    """Find a todo list through the small set of wrappers used by hook tools."""
+    if isinstance(holder, str):
+        try:
+            holder = json.loads(holder)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(holder, list):
+        return [item for item in holder if _looks_like_todo(item)]
+    if not isinstance(holder, dict):
+        return []
+    for key in ("todos", "tasks", "plan", "items", "steps"):
+        if isinstance(holder.get(key), list):
+            return [item for item in holder[key] if _looks_like_todo(item)]
+    for key in ("result", "output", "data", "structured_content", "structuredContent"):
+        items = _todo_items(holder.get(key))
+        if items:
+            return items
+    return []
+
+
+def _looks_like_todo(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    has_content = any(
+        key in item for key in ("content", "text", "step", "subject", "description", "title")
+    )
+    has_identity_or_status = any(key in item for key in ("id", "uuid", "status", "state"))
+    return has_content and has_identity_or_status
+
+
 def _task_to_todo(item: dict) -> core.Todo | None:
     """Coerce one task dict (TodoWrite OR the newer TaskCreate/TaskList shape) to a core.Todo.
 
@@ -83,8 +120,16 @@ def _task_to_todo(item: dict) -> core.Todo | None:
     New task system: {id/uuid, subject, description, status, ...}"""
     if not isinstance(item, dict):
         return None
-    content = str(item.get("content") or item.get("subject") or item.get("description") or "")
-    status = str(item.get("status") or "").lower()
+    content = str(
+        item.get("content")
+        or item.get("subject")
+        or item.get("description")
+        or item.get("text")
+        or item.get("step")
+        or item.get("title")
+        or ""
+    )
+    status = str(item.get("status") or item.get("state") or "").lower()
     # New system uses status values like "pending"/"in_progress"/"completed"; same vocabulary.
     return core.Todo(
         id=str(item.get("id") or item.get("uuid") or content[:40]),
@@ -104,16 +149,11 @@ def normalize_todos(payload: dict) -> list[core.Todo]:
     out: list[core.Todo] = []
 
     # 1) A list of items in tool_input (TodoWrite) or tool_response (TaskList).
-    for holder_key in ("tool_input", "tool_response"):
-        holder = payload.get(holder_key) or {}
-        items = None
-        if isinstance(holder, dict):
-            for k in ("todos", "tasks", "items"):
-                if isinstance(holder.get(k), list):
-                    items = holder[k]
-                    break
-        elif isinstance(holder, list):
-            items = holder
+    for holder in (
+        _event_part(payload, "tool_input", "toolInput"),
+        _event_part(payload, "tool_response", "toolResponse"),
+    ):
+        items = _todo_items(holder)
         if items:
             for it in items:
                 t = _task_to_todo(it) if isinstance(it, dict) else None
@@ -123,7 +163,7 @@ def normalize_todos(payload: dict) -> list[core.Todo]:
                 return out  # a full list beats a single item
 
     # 2) Single created/updated task (TaskCreate / TaskUpdate tool_input).
-    ti = payload.get("tool_input") or {}
+    ti = _event_part(payload, "tool_input", "toolInput") or {}
     if isinstance(ti, dict) and (ti.get("subject") or ti.get("description")):
         t = _task_to_todo(ti)
         if t:
@@ -132,6 +172,33 @@ def normalize_todos(payload: dict) -> list[core.Todo]:
                 t.status = "pending"
             out.append(t)
     return out
+
+
+def normalize_edit_success(payload: dict) -> bool:
+    """Return whether a PostToolUse edit payload represents a successful edit."""
+    response = _event_part(payload, "tool_response", "toolResponse")
+    if response is None or response is False:
+        return False
+    return not _has_explicit_failure(response)
+
+
+def _has_explicit_failure(value) -> bool:
+    if isinstance(value, list):
+        return any(_has_explicit_failure(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    if value.get("is_error") is True or value.get("isError") is True:
+        return True
+    if any(value.get(key) is False for key in ("ok", "success", "executed")):
+        return True
+    if value.get("error"):
+        return True
+    if str(value.get("status", "")).lower() in ("error", "failed", "failure"):
+        return True
+    return any(
+        _has_explicit_failure(value.get(key))
+        for key in ("result", "output", "data", "structured_content", "structuredContent")
+    )
 
 
 def emit(action: core.HookAction | None, *, event: str, deny_as_permission: bool = False) -> None:

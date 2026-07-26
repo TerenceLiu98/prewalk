@@ -23,7 +23,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -153,40 +155,94 @@ def state_path(store_file: str | os.PathLike[str]) -> Path:
     return p
 
 
+@contextmanager
+def _store_lock(store_file: str | os.PathLike[str]):
+    """Serialize state transactions across threads and hook processes."""
+    with _LOCK:
+        p = state_path(store_file)
+        lock_path = p.with_name(p.name + ".lock")
+        with open(lock_path, "a+b") as lock_file:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _quarantine_corrupt_store(store_file: str | os.PathLike[str]) -> None:
+    """Move malformed state aside so the next update can start cleanly."""
+    p = Path(store_file)
+    backup = p.with_name(p.name + ".corrupt")
+    try:
+        os.replace(p, backup)
+    except FileNotFoundError:
+        pass
+
+
 def _read_all(store_file: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     try:
         with open(store_file, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _quarantine_corrupt_store(store_file)
+        return {}
+    if not isinstance(data, dict) or any(not isinstance(value, dict) for value in data.values()):
+        _quarantine_corrupt_store(store_file)
+        return {}
+    return data
 
 
 def _write_all(store_file: str | os.PathLike[str], data: dict[str, dict[str, Any]]) -> None:
     p = state_path(store_file)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-    os.replace(tmp, p)
+    fd, tmp_name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, p)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def load_state(store_file: str | os.PathLike[str], session_id: str) -> PrewalkState | None:
     if not session_id:
         return None
-    with _LOCK:
+    with _store_lock(store_file):
         rec = _read_all(store_file).get(session_id)
     return PrewalkState.from_dict(rec) if rec else None
 
 
 def save_state(store_file: str | os.PathLike[str], state: PrewalkState) -> None:
-    with _LOCK:
+    with _store_lock(store_file):
         data = _read_all(store_file)
         data[state.session_id] = state.to_dict()
         _write_all(store_file, data)
 
 
 def clear_state(store_file: str | os.PathLike[str], session_id: str) -> None:
-    with _LOCK:
+    with _store_lock(store_file):
         data = _read_all(store_file)
         if data.pop(session_id, None) is not None:
             _write_all(store_file, data)
@@ -476,6 +532,11 @@ def on_todos_changed(
         state.phase = PAUSED
         save_state(store_file, state)
         return HookAction(system_message=PAUSED_HINT)
+    if state.phase == READY:
+        # The first edit may land after the plan's PostToolUse event. Keep the
+        # ready state, but still surface the checkpoint at the next Stop event.
+        save_state(store_file, state)
+        return HookAction(system_message=PAUSED_HINT)
     # already PAUSED (re-paused after a revision)
     save_state(store_file, state)
     return HookAction(system_message="prewalk: plan updated — `/pw-go` to hand off, or `/pw-revise <changes>` again.")
@@ -493,12 +554,12 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str =
       PreToolUse ``handoff_router`` hook rewrites that spawn onto the executor
       model automatically.
     - ``host="codex"``: Codex has no ``updatedInput``, so no hook can rewrite
-      the spawn. The model itself calls ``spawn_agent("prewalk-executor", ...)``
-      (the agent's TOML pins it to the executor model).
+      the spawn. The model calls the native ``spawn_agent`` tool with an
+      explicit model and a fresh-context flag.
 
     Returns a no-checkpoint message if nothing is armed."""
     state = load_state(store_file, session_id)
-    if state is None or state.phase not in (FRONTIER, READY, PAUSED):
+    if state is None:
         return HookAction(
             additional_context=(
                 "There is no active prewalk checkpoint in this session. Reply with a single line "
@@ -512,18 +573,30 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str =
                 "executor subagent; do not spawn another handoff."
             )
         )
-    # Keep phase as-is (ready or frontier); the handoff hook (Claude) or the
-    # executor's own completion detection (Codex) flips it to executor.
+    if state.phase not in (FRONTIER, READY, PAUSED):
+        return HookAction(
+            additional_context=(
+                "There is no active prewalk checkpoint in this session. Reply with a single line "
+                "saying so and end your turn — do not touch the todo list or any file."
+            )
+        )
     if host == "codex":
         action_line = (
-            f"ACTION: hand off now by calling spawn_agent(\"prewalk-executor\", <your handoff summary>) "
-            f"— the files you read, the full todo/plan, what task #1 proved, and exactly what remains. "
-            f"The executor agent is pinned to the {state.executor_model} model in its agent file and starts "
-            f"on a fresh context inheriting only your summary, so make the summary self-contained. Do not "
-            f"do the remaining edits in this session. (An in-thread `/model {state.executor_model}` switch "
-            f"is a fallback only for long tasks where re-sending the summary is impractical.)"
+            f"ACTION: call the native `spawn_agent` tool exactly once with `message` set to your full, "
+            f"self-contained handoff summary, `model` set to `{state.executor_model}`, and "
+            f"`fork_context` set to `false`. Include the files you read, the full todo/plan, what task #1 "
+            f"proved, and exactly what remains. Do not use a named `prewalk-executor` argument; Codex "
+            f"does not resolve plugin agent TOML files as named spawn targets. Do not do the remaining "
+            f"edits in this session. If the tool call fails, disarm and re-arm prewalk before retrying. "
+            f"(An in-thread `/model {state.executor_model}` switch is a fallback only.)"
         )
-        sysmsg = f"prewalk: handoff requested — spawn_agent(\"prewalk-executor\") for the remaining work (executor {state.executor_model})."
+        # Codex has no post-spawn hook to atomically confirm that the model's
+        # tool call succeeded. Claim the handoff here to make /pw-go idempotent;
+        # a failed spawn can be recovered by disarming and re-arming the run.
+        state.phase = EXECUTOR
+        state.handoff_done = True
+        save_state(store_file, state)
+        sysmsg = f"prewalk: handoff requested — call spawn_agent with model {state.executor_model}."
     else:
         action_line = (
             f"ACTION: hand off now by spawning ONE Task (Agent tool) whose prompt is your handoff "

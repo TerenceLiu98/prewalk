@@ -23,7 +23,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -153,40 +155,94 @@ def state_path(store_file: str | os.PathLike[str]) -> Path:
     return p
 
 
+@contextmanager
+def _store_lock(store_file: str | os.PathLike[str]):
+    """Serialize state transactions across threads and hook processes."""
+    with _LOCK:
+        p = state_path(store_file)
+        lock_path = p.with_name(p.name + ".lock")
+        with open(lock_path, "a+b") as lock_file:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _quarantine_corrupt_store(store_file: str | os.PathLike[str]) -> None:
+    """Move malformed state aside so the next update can start cleanly."""
+    p = Path(store_file)
+    backup = p.with_name(p.name + ".corrupt")
+    try:
+        os.replace(p, backup)
+    except FileNotFoundError:
+        pass
+
+
 def _read_all(store_file: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     try:
         with open(store_file, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _quarantine_corrupt_store(store_file)
+        return {}
+    if not isinstance(data, dict) or any(not isinstance(value, dict) for value in data.values()):
+        _quarantine_corrupt_store(store_file)
+        return {}
+    return data
 
 
 def _write_all(store_file: str | os.PathLike[str], data: dict[str, dict[str, Any]]) -> None:
     p = state_path(store_file)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-    os.replace(tmp, p)
+    fd, tmp_name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, p)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def load_state(store_file: str | os.PathLike[str], session_id: str) -> PrewalkState | None:
     if not session_id:
         return None
-    with _LOCK:
+    with _store_lock(store_file):
         rec = _read_all(store_file).get(session_id)
     return PrewalkState.from_dict(rec) if rec else None
 
 
 def save_state(store_file: str | os.PathLike[str], state: PrewalkState) -> None:
-    with _LOCK:
+    with _store_lock(store_file):
         data = _read_all(store_file)
         data[state.session_id] = state.to_dict()
         _write_all(store_file, data)
 
 
 def clear_state(store_file: str | os.PathLike[str], session_id: str) -> None:
-    with _LOCK:
+    with _store_lock(store_file):
         data = _read_all(store_file)
         if data.pop(session_id, None) is not None:
             _write_all(store_file, data)

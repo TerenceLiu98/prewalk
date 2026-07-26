@@ -18,8 +18,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_arm.py" arm "$CLAUDE_SESSION_ID" "$ARGUMEN
 
 `$CLAUDE_PLUGIN_ROOT` is set automatically when this runs as a plugin. The script
 reads `~/.claude/prewalk-presets.json` (default preset `code-value`), prints the
-planner/executor pair, and tells you which model to be on. Add `--no-pause`
-anywhere in the arguments for auto-swap mode.
+planner/executor pair, and tells you which model to be on. Put `--preset <name>`
+or `--no-pause` before the task text when needed; presets are never inferred
+from task words. `--no-pause` enables auto-swap mode.
 
 Status / disarm:
 ```bash

@@ -49,6 +49,10 @@ claude plugin marketplace remove prewalk
 /pw-revise <changes>    # revise the plan on the frontier instead
 ```
 
+Options must precede task text: use `--preset <name>` to select a preset and
+`--no-pause` for auto-swap mode. Freeform task words are never interpreted as
+preset names.
+
 Status / disarm (helpers, not skills):
 ```sh
 python3 <plugin>/hooks/_arm.py status "$CLAUDE_SESSION_ID"
@@ -93,7 +97,9 @@ Hooks (`hooks/hooks.json`):
   re-exploration.
 - Edit the planner/executor models in `~/.claude/prewalk-presets.json` to what
   your install resolves (aliases `opus`/`sonnet`/`haiku`/`fable`, or full ids).
-- Per-session state lives in `~/.claude/prewalk-state.json`.
+- Per-session state lives in `~/.claude/prewalk-state.json`. Hook processes
+  coordinate through a sidecar lock; malformed JSON is preserved as
+  `prewalk-state.json.corrupt` and the next update starts cleanly.
 
 ## Layout
 

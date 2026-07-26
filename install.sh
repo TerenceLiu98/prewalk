@@ -5,14 +5,14 @@
 #   ./install.sh codex       [CODEX_HOME]
 #
 # - claude-code: copies skills + presets into ~/.claude (or $CLAUDE_CONFIG_DIR),
-#   merges the prewalk hooks into settings.json, and patches the <PLUGIN_ROOT>
-#   placeholder in the copied skills to the absolute hooks/ path.
+#   merges the prewalk hooks into settings.json, and patches plugin-root
+#   references in the copied skills to the absolute source path.
 # - codex: copies presets into ~/.codex (or $CODEX_HOME). The plugin itself is
 #   installed via the Codex marketplace (`codex plugin marketplace add` +
 #   `codex plugin add`); this only stages presets.
 #
-# Re-runnable: merges idempotently (hooks are appended each run, so remove
-# duplicates by hand if you re-run many times — or just run once).
+# Re-runnable: replaces older prewalk hook registrations without duplicating
+# unrelated user hooks.
 
 set -euo pipefail
 
@@ -30,16 +30,16 @@ install_claude_code() {
   cp "$SRC/presets.example.json" "$CFG/prewalk-presets.json"
   echo "✓ copied skills + presets → $CFG"
 
-  # Patch <PLUGIN_ROOT> in the copied skills to the absolute hooks dir.
+  # Loose installs do not set CLAUDE_PLUGIN_ROOT, so bake in the source path.
   python3 - "$CFG" "$SRC" <<'PY'
 import json, os, sys
 cfg, src = sys.argv[1], sys.argv[2]
 import glob
 for md in glob.glob(os.path.join(cfg, "skills", "*", "SKILL.md")):
     t = open(md).read()
-    t = t.replace("<PLUGIN_ROOT>", src)
+    t = t.replace("${CLAUDE_PLUGIN_ROOT}", src).replace("<PLUGIN_ROOT>", src)
     open(md, "w").write(t)
-print("✓ patched <PLUGIN_ROOT> in skills")
+print("✓ patched plugin root in skills")
 PY
 
   # Merge hooks into settings.json.
@@ -53,11 +53,30 @@ if os.path.exists(path):
         import shutil; shutil.copy(path, path + ".bak"); existing = {}
 h = existing.get("hooks", {})
 def cmd(p): return f'python3 "{os.path.join(hooks, p)}"'
+
+# Remove current and legacy registrations owned by this checkout before adding
+# the current set. Leave every unrelated user hook untouched.
+managed = {
+    "export_session_id.py", "todo_tracker.py", "edit_tracker.py",
+    "handoff_router.py", "pause_detect.py", "edit_gate.py",
+}
+def owned(group):
+    commands = [entry.get("command", "") for entry in group.get("hooks", [])]
+    return any(os.path.join(hooks, name) in command for command in commands for name in managed)
+for event in list(h):
+    h[event] = [group for group in h[event] if not owned(group)]
+    if not h[event]:
+        del h[event]
+
 for ev, grp in {
     "SessionStart": [{"hooks":[{"type":"command","command":cmd("export_session_id.py")}]}],
-    "Stop": [{"hooks":[{"type":"command","command":cmd("pause_detect.py")}]}],
-    "PostToolUse": [{"matcher":"TodoWrite","hooks":[{"type":"command","command":cmd("pause_detect.py")}]}],
-    "PreToolUse": [{"matcher":"Write|Edit|MultiEdit","hooks":[{"type":"command","command":cmd("edit_gate.py")}]}],
+    "PostToolUse": [
+        {"matcher":"TodoWrite|TaskCreate|TaskUpdate|TaskList",
+         "hooks":[{"type":"command","command":cmd("todo_tracker.py")} ]},
+        {"matcher":"Write|Edit|MultiEdit",
+         "hooks":[{"type":"command","command":cmd("edit_tracker.py")} ]},
+    ],
+    "PreToolUse": [{"matcher":"Task","hooks":[{"type":"command","command":cmd("handoff_router.py")}]}],
 }.items():
     h.setdefault(ev, []).extend(grp)
 existing["hooks"] = h

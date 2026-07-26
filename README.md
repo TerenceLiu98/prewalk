@@ -73,9 +73,9 @@ fallback when subagents are unavailable.)
             │ /pw-go → handoff note           │                      │
             ▼   "spawn_agent(prewalk-executor)"│                      │
   ┌─────────────────────┐  spawn_agent:       │                      │
-  │ model runs the      │  agent=executor     │                      │
-  │ spawn_agent call    │  (model pinned ────▶│ finishes the rest,   │
-  │ itself              │   in the toml)      │ one todo at a time   │
+  │ model runs the      │  model=executor     │                      │
+  │ spawn_agent call    │  fork_context=false▶│ finishes the rest,   │
+  │ itself              │  + summary          │ one todo at a time   │
   └─────────────────────┘  + handoff summary  └──────────────────────┘
 ```
 
@@ -111,12 +111,16 @@ cp codex/presets.example.toml ~/.codex/prewalk-presets.toml   # then edit models
 # Claude Code
 /prewalk Add a settings page with tabbed sections
 ... frontier explores, plans, lands task #1, writes a handoff summary ...
-/pw-go                       # spawn the executor (Claude Code) / switch model (Codex)
+/pw-go                       # spawn the executor subagent
 
 # Codex
 $prewalk Add a settings page with tabbed sections
 /pw-go
 ```
+
+Arm options are explicit and go before task text, for example
+`$prewalk --preset code-value Add settings` or
+`/prewalk --no-pause Add settings`. Task words never select a preset.
 
 At the handoff point, review the plan and task #1, then run **`/pw-go`**. To
 revise the plan on the frontier instead, run **`/pw-revise <changes>`**.
@@ -131,6 +135,12 @@ revise the plan on the frontier instead, run **`/pw-revise <changes>`**.
 - **Engine**: `_shared/prewalk_core.py` — state machine, todo validation, preset
   parsing, frontier/handoff prompts. Each plugin vendors a copy under
   `hooks/_shared/` and `hooks/_bootstrap.py` finds it from any install layout.
+  State updates use a cross-process lock and atomic replacement; malformed state
+  is moved to `prewalk-state.json.corrupt` before recovery.
+
+Repository verification is one command: `./scripts/check.sh`. It checks that
+both vendored engine copies match the canonical source, runs all standard-library
+tests, validates JSON and shell entry points, and smoke-installs both hosts.
 
 ## Layout
 
@@ -154,6 +164,8 @@ prewalk/
 │   ├── skills/{prewalk,pw-go,pw-revise}/SKILL.md
 │   ├── agents/prewalk-executor.toml
 │   └── presets.example.toml
+├── scripts/check.sh                    # sync, test, manifest, install smoke checks
+├── tests/                              # core, argument, and adapter regressions
 └── install.sh
 ```
 

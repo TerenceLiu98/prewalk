@@ -2,7 +2,7 @@
 """Claude Code prewalk arming / status / disarm helper, called by the /prewalk skill.
 
 Usage:
-  _arm.py arm    <session_id> [preset_name] [--no-pause]
+  _arm.py arm    <session_id> [--preset NAME] [--no-pause] [task ...]
   _arm.py status <session_id>
   _arm.py disarm <session_id>
 
@@ -14,6 +14,7 @@ frontier instructions + the model pair for the skill to surface.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 
 import _bootstrap  # noqa: F401  (locates prewalk_core.py)
@@ -23,14 +24,34 @@ import _common  # type: ignore[import-not-found]  # noqa: E402
 
 
 def _parse_args(rest: list[str]) -> tuple[str | None, bool]:
-    """Return (preset_name_or_None, auto_swap)."""
+    """Parse leading arm options without interpreting freeform task text.
+
+    Skills pass ``$ARGUMENTS`` as one quoted value, while direct callers may
+    pass separate argv tokens. In either form, the first non-option starts the
+    task and stops option parsing.
+    """
+    tokens = shlex.split(rest[0]) if len(rest) == 1 else rest
     auto_swap = False
     preset: str | None = None
-    for tok in rest:
+    index = 0
+    while index < len(tokens):
+        tok = tokens[index]
+        if tok == "--":
+            break
         if tok == "--no-pause":
             auto_swap = True
-        elif not tok.startswith("-") and preset is None:
-            preset = tok
+        elif tok == "--preset":
+            if index + 1 >= len(tokens):
+                raise ValueError("--preset requires a name")
+            index += 1
+            preset = tokens[index]
+        elif tok.startswith("--preset="):
+            preset = tok.partition("=")[2]
+            if not preset:
+                raise ValueError("--preset requires a name")
+        else:
+            break
+        index += 1
     return preset, auto_swap
 
 
@@ -42,7 +63,11 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
               "or pass the id explicitly: _arm.py arm <session_id> ...",
               file=sys.stderr)
         return 1
-    preset_name, auto_swap = _parse_args(rest)
+    try:
+        preset_name, auto_swap = _parse_args(rest)
+    except (ValueError, shlex.Error) as exc:
+        print(f"prewalk: invalid arm arguments: {exc}", file=sys.stderr)
+        return 2
     presets_path = _common.presets_file()
     presets = core.load_presets_json(presets_path)
     if not presets:

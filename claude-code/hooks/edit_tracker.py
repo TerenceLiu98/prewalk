@@ -30,13 +30,7 @@ def main() -> int:
     if state is None or state.phase != core.FRONTIER:
         return 0  # not arming, or already past frontier
 
-    # Only count successful edits.
-    tool_response = payload.get("tool_response") or {}
-    ok = False
-    if isinstance(tool_response, dict):
-        # Write/Edit return {ok, file, ...} or an error; treat absence of error as ok.
-        ok = not str(tool_response.get("error", "")).strip() or tool_response.get("ok", True) is not False
-    if not ok:
+    if not _common.normalize_edit_success(payload):
         return 0
 
     if not state.first_edit_landed:
