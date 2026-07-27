@@ -1,4 +1,4 @@
-# Codex subagent for prewalk executor (v0.2).
+# Codex subagent policy reference for prewalk executor (v0.3).
 #
 # This file documents the executor policy. Codex's native spawn_agent tool does
 # not resolve plugin agent files by name, so /pw-go passes this model explicitly
@@ -28,5 +28,6 @@ summary; do not redo the exploration.**
    either completed or explicitly cancelled with a reason. Report anything you
    could not complete.
 
-Return a concise report when finished.
+End the report with exactly one machine-readable marker: `PREWALK_COMPLETE` when
+every todo is completed/cancelled, otherwise `PREWALK_INCOMPLETE: <reason>`.
 """

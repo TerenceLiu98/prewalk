@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code prewalk hook (v0.2) — PostToolUse on TodoWrite.
+"""Claude Code prewalk hook (v0.3) — PostToolUse on todo/task tools.
 
 Tracks the todo list across the run: counts remaining items, notes the ⏸️ PAUSE
 checkpoint, and (in --no-pause auto mode) nudges the frontier to hand off by
@@ -28,21 +28,19 @@ def main() -> int:
     if not todos:
         return 0
 
-    pause_present = any(t.is_pause for t in todos)
-    if pause_present:
-        state.pause_seen = True
-    if state.phase == core.FRONTIER:
-        state.frontier_todos_ever_seen = True
-    state.todos_remaining = core.count_remaining(todos)
-    core.save_state(store, state)
+    # The shared core validates the full checkpoint and owns phase changes.
+    if state.phase in (core.FRONTIER, core.READY):
+        action = core.on_todos_changed(store, sid, todos)
+        _common.emit(action, event="PostToolUse")
+        state = core.load_state(store, sid)
+        if state is None:
+            return 0
 
     # Executor phase: detect completion.
     if state.phase == core.EXECUTOR:
         if state.todos_remaining == 0:
-            core.clear_state(store, sid)
-            _common.emit(core.HookAction(
-                system_message="prewalk: all todos completed ✅",
-            ), event="PostToolUse")
+            action = core.on_executor_result(store, sid, complete=True)
+            _common.emit(action, event="PostToolUse")
         return 0
 
     return 0

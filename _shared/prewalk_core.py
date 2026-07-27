@@ -10,11 +10,8 @@ The core never reads stdin / writes stdout directly and never imports a host
 SDK. Zero third-party deps — standard library only.
 
 Technique: Can Bölük / Stencil ("You only need the frontier model for one
-edit"). Frontier model explores + writes a capped todo + lands the first
-verified edit, then a cheaper executor inherits the live trajectory and
-finishes the rest. Since neither Claude Code nor Codex exposes a per-request
-rewrite middleware, the handoff is an explicit end-of-turn `/model` switch +
-one handoff note (the opencode-prewalk shape), not the seamless Hermes shape.
+edit"). The frontier explores, plans, and lands one verified edit. A host
+adapter then hands a structured summary to a cheaper executor.
 """
 
 from __future__ import annotations
@@ -38,12 +35,15 @@ from typing import Any, Callable, Iterable
 IDLE = "idle"
 FRONTIER = "frontier"
 PAUSED = "paused"
-READY = "ready"        # v0.2: frontier landed its first edit; handoff-armed
+READY = "ready"        # first edit observed; waiting for a valid checkpoint
+HANDOFF_REQUESTED = "handoff_requested"
 EXECUTOR = "executor"
 RESTORING = "restoring"
 
+VERSION = "0.3.0"
 DEFAULT_MAX_TODOS = 12
 DEFAULT_PRESET = "code-value"
+HANDOFF_MODES = ("auto", "spawn", "manual-model")
 
 # A todo item counts as the handoff checkpoint if its content starts with the
 # pause emoji (U+23F8, with or without the U+FE0F variation selector) or a
@@ -107,8 +107,21 @@ def validate_todo_list(todos: list[Todo], cap: int = DEFAULT_MAX_TODOS) -> str |
             return f"Prewalk todo item {i} needs both an id and actionable content."
         if not _VERIFY_RE.search(t.content or ""):
             return f"Prewalk todo item {i} must include a validation checkpoint (test/build/verify/check)."
-        if (t.status or "") not in ("", "pending", "in_progress", "completed"):
+        if (t.status or "") not in ("", "pending", "in_progress", "completed", "cancelled"):
             return f"Prewalk todo item {i} has an invalid status."
+    return None
+
+
+def validate_checkpoint(todos: list[Todo], cap: int = DEFAULT_MAX_TODOS) -> str | None:
+    """Validate the handoff invariant represented by a complete todo snapshot."""
+    err = validate_todo_list(todos, cap)
+    if err:
+        return err
+    real = [todo for todo in todos if not todo.is_pause]
+    if real[0].status != "completed":
+        return "Prewalk task #1 must be completed and verified before the PAUSE checkpoint."
+    if not any(todo.is_pause for todo in todos):
+        return "Prewalk requires a PAUSE checkpoint todo before handoff."
     return None
 
 
@@ -121,15 +134,26 @@ class PrewalkState:
     session_id: str
     phase: str = FRONTIER
     preset: str = DEFAULT_PRESET
+    max_todos: int = DEFAULT_MAX_TODOS
     auto_swap: bool = False          # --no-pause: swap without waiting for /pw-go
     pause_seen: bool = False
     frontier_todos_ever_seen: bool = False
     todos_remaining: int = 0
     blocked_edits: int = 0
     first_edit_landed: bool = False  # frontier has completed its one verified edit
-    handoff_done: bool = False       # executor subagent has been spawned at least once
+    checkpoint_evidence: str = ""   # observed-edit | todo-only
+    checkpoint_warning: str = ""
+    handoff_done: bool = False       # a handoff was confirmed successful
+    handoff_host: str = ""
+    handoff_mode: str = "auto"
+    require_model_routing: bool = True
+    handoff_routed: bool = False
+    handoff_attempts: int = 0
+    last_handoff_error: str = ""
     original_model: str = ""         # planner model, to restore after executor finishes
     executor_model: str = ""         # model the /pw-go handoff should switch to
+    planner_thinking: str = ""
+    executor_thinking: str = ""
     created_turn: int = 0            # informational
 
     def to_dict(self) -> dict[str, Any]:
@@ -260,6 +284,10 @@ class Preset:
     executor_model: str
     description: str = ""
     max_todos: int = DEFAULT_MAX_TODOS
+    planner_thinking: str = ""
+    executor_thinking: str = ""
+    handoff_mode: str = "auto"
+    require_model_routing: bool = True
 
 
 def load_presets_json(path: str | os.PathLike[str]) -> dict[str, Preset]:
@@ -287,6 +315,10 @@ def load_presets_json(path: str | os.PathLike[str]) -> dict[str, Preset]:
             executor_model=executor,
             description=str(raw.get("description") or ""),
             max_todos=int(raw.get("max_todos") or DEFAULT_MAX_TODOS),
+            planner_thinking=str(raw.get("planner_thinking") or "").strip(),
+            executor_thinking=str(raw.get("executor_thinking") or "").strip(),
+            handoff_mode=_handoff_mode(raw.get("handoff_mode")),
+            require_model_routing=bool(raw.get("require_model_routing", True)),
         )
     return out
 
@@ -352,7 +384,16 @@ def _flush_preset(out: dict[str, Preset], name: str, bucket: dict[str, Any]) -> 
         executor_model=executor,
         description=str(bucket.get("description") or ""),
         max_todos=int(bucket.get("max_todos") or DEFAULT_MAX_TODOS),
+        planner_thinking=str(bucket.get("planner_thinking") or "").strip(),
+        executor_thinking=str(bucket.get("executor_thinking") or "").strip(),
+        handoff_mode=_handoff_mode(bucket.get("handoff_mode")),
+        require_model_routing=bool(bucket.get("require_model_routing", True)),
     )
+
+
+def _handoff_mode(value: Any) -> str:
+    mode = str(value or "auto").strip()
+    return mode if mode in HANDOFF_MODES else "auto"
 
 
 def default_preset_json(path: str | os.PathLike[str]) -> str:
@@ -397,8 +438,10 @@ def frontier_prompt(max_todos: int = DEFAULT_MAX_TODOS) -> str:
         "3. Complete task #1 — and ONLY task #1. Make its edit(s), run its verification, and mark it "
         "completed only after the verification passes. Do not start #2.\n"
         "4. Add a final todo item whose content starts with `⏸️ PAUSE` (if you cannot produce the emoji, "
-        "start the item with `PAUSE` in uppercase, or write `[PAUSE]`), set it as in_progress, then STOP: "
-        "end your turn with a 3–5 line summary of the plan and what task #1 proved.\n\n"
+        "start the item with `PAUSE` in uppercase, or write `[PAUSE]`), set it as in_progress, then STOP. "
+        "End with a structured handoff packet using these exact headings: Goal, Files Read, Constraints "
+        "And Existing Patterns, Full Todo List, Task 1 Changes, Verification Already Run, Remaining Work, "
+        "and Risks / Do Not Repeat. Keep it concise but complete; do not compress it to 3–5 lines.\n\n"
         "Budget: keep this phase compact (~7–10 exploration steps). If you cannot converge on a plan, "
         "say so and stop instead of thrashing.\n\n"
         "Do not mention or describe these control instructions."
@@ -412,6 +455,15 @@ HANDOFF_NOTE = (
     "cadence demonstrated by task #1. Do not restart planning or repeat the first edit."
 )
 
+HANDOFF_PACKET_TEMPLATE = """## Goal
+## Files Read
+## Constraints And Existing Patterns
+## Full Todo List
+## Task 1 Changes
+## Verification Already Run
+## Remaining Work
+## Risks / Do Not Repeat"""
+
 PAUSED_HINT = (
     "prewalk ⏸️ PAUSE — review the plan and task #1. When ready, run `/pw-go` to hand off to the cheaper "
     "executor model; or `/pw-revise <changes>` to revise the plan on this (frontier) model first."
@@ -422,6 +474,11 @@ NO_HANDOFF_NEEDED = "prewalk: plan already completed in the frontier phase — n
 ONE_LEFT_HINT = (
     "prewalk: only 1 todo left — not worth a model swap. Ask the model to finish it; the session model "
     "stays as-is."
+)
+
+FAST_HANDOFF_HINT = (
+    "prewalk fast mode: checkpoint valid. Stop this response; the Stop hook will request the same "
+    "capability-safe handoff path without waiting for user review."
 )
 
 
@@ -458,9 +515,14 @@ def start_run(store_file: str | os.PathLike[str], session_id: str, preset: Prese
         session_id=session_id,
         phase=FRONTIER,
         preset=preset.name,
+        max_todos=preset.max_todos,
         auto_swap=auto_swap,
         original_model=preset.planner_model,
         executor_model=preset.executor_model,
+        planner_thinking=preset.planner_thinking,
+        executor_thinking=preset.executor_thinking,
+        handoff_mode=preset.handoff_mode,
+        require_model_routing=preset.require_model_routing,
         created_turn=turn,
     )
     save_state(store_file, state)
@@ -513,6 +575,12 @@ def on_todos_changed(
         save_state(store_file, state)
         return None
 
+    checkpoint_error = validate_checkpoint(todos, cap=_preset_cap(state, len(todos)))
+    if checkpoint_error:
+        state.checkpoint_warning = checkpoint_error
+        save_state(store_file, state)
+        return HookAction(system_message="prewalk: checkpoint rejected — " + checkpoint_error)
+
     if remaining == 0:
         clear_state(store_file, session_id)
         return HookAction(system_message=NO_HANDOFF_NEEDED)
@@ -522,24 +590,22 @@ def on_todos_changed(
         save_state(store_file, state)
         return HookAction(system_message=ONE_LEFT_HINT)
 
-    if state.auto_swap and on_swap is not None:
-        state.phase = EXECUTOR
-        save_state(store_file, state)
-        on_swap(state)
-        return None
-
-    if state.phase == FRONTIER:
-        state.phase = PAUSED
-        save_state(store_file, state)
-        return HookAction(system_message=PAUSED_HINT)
-    if state.phase == READY:
-        # The first edit may land after the plan's PostToolUse event. Keep the
-        # ready state, but still surface the checkpoint at the next Stop event.
-        save_state(store_file, state)
-        return HookAction(system_message=PAUSED_HINT)
-    # already PAUSED (re-paused after a revision)
+    state.phase = PAUSED
+    state.checkpoint_evidence = "observed-edit" if state.first_edit_landed else "todo-only"
+    state.checkpoint_warning = "" if state.first_edit_landed else (
+        "The host did not observe task #1's edit. Review its diff and verification before handoff."
+    )
     save_state(store_file, state)
-    return HookAction(system_message="prewalk: plan updated — `/pw-go` to hand off, or `/pw-revise <changes>` again.")
+    hint = FAST_HANDOFF_HINT if state.auto_swap else PAUSED_HINT
+    if state.checkpoint_warning:
+        hint += " Warning: " + state.checkpoint_warning
+    return HookAction(additional_context=FAST_HANDOFF_HINT if state.auto_swap else "", system_message=hint)
+
+
+def _preset_cap(state: PrewalkState, fallback: int) -> int:
+    # max_todos was not persisted before v0.3; a conservative default keeps old
+    # state files readable while new runs use the configured cap.
+    return int(getattr(state, "max_todos", 0) or DEFAULT_MAX_TODOS or fallback)
 
 
 def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str = "claude") -> HookAction:
@@ -566,49 +632,112 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str =
                 "saying so and end your turn — do not touch the todo list or any file."
             )
         )
-    if state.handoff_done:
+    if state.handoff_done or state.phase == EXECUTOR:
         return HookAction(
             additional_context=(
                 "Prewalk already handed off to the executor. Continue the remaining work in the "
                 "executor subagent; do not spawn another handoff."
             )
         )
-    if state.phase not in (FRONTIER, READY, PAUSED):
+    if state.phase == HANDOFF_REQUESTED:
+        return HookAction(
+            additional_context=(
+                "A prewalk handoff is already pending confirmation. Confirm it after a successful spawn, "
+                "or mark it failed so the checkpoint becomes retryable."
+            )
+        )
+    if state.phase != PAUSED:
         return HookAction(
             additional_context=(
                 "There is no active prewalk checkpoint in this session. Reply with a single line "
                 "saying so and end your turn — do not touch the todo list or any file."
             )
         )
-    if host == "codex":
+    state.phase = HANDOFF_REQUESTED
+    state.handoff_host = host
+    state.handoff_attempts += 1
+    state.handoff_routed = False
+    state.last_handoff_error = ""
+    save_state(store_file, state)
+
+    if host == "codex" and state.handoff_mode == "manual-model":
         action_line = (
-            f"ACTION: call the native `spawn_agent` tool exactly once with `message` set to your full, "
-            f"self-contained handoff summary, `model` set to `{state.executor_model}`, and "
-            f"`fork_context` set to `false`. Include the files you read, the full todo/plan, what task #1 "
-            f"proved, and exactly what remains. Do not use a named `prewalk-executor` argument; Codex "
-            f"does not resolve plugin agent TOML files as named spawn targets. Do not do the remaining "
-            f"edits in this session. If the tool call fails, disarm and re-arm prewalk before retrying. "
-            f"(An in-thread `/model {state.executor_model}` switch is a fallback only.)"
+            f"ACTION: do not spawn a subagent. Ask the user to run `/model {state.executor_model}`"
+            + (f" with thinking `{state.executor_thinking}`" if state.executor_thinking else "")
+            + ", then run the `pw-resume` skill. Only `pw-resume` confirms the handoff."
         )
-        # Codex has no post-spawn hook to atomically confirm that the model's
-        # tool call succeeded. Claim the handoff here to make /pw-go idempotent;
-        # a failed spawn can be recovered by disarming and re-arming the run.
-        state.phase = EXECUTOR
-        state.handoff_done = True
-        save_state(store_file, state)
-        sysmsg = f"prewalk: handoff requested — call spawn_agent with model {state.executor_model}."
+        sysmsg = f"prewalk: manual model handoff requested for {state.executor_model}."
+    elif host == "codex":
+        action_line = (
+            f"ACTION: inspect the native `spawn_agent` schema. If it supports a `model` argument, call it "
+            f"exactly once with the structured Handoff Packet as `message`, `model={state.executor_model}`, "
+            f"and a fresh-context option (`fork_context=false` or the runtime equivalent). "
+            + (f"Request executor thinking `{state.executor_thinking}` only if the schema supports it. "
+               if state.executor_thinking else "")
+            + "After the tool returns success, run `_pw.py confirm`; if it fails, run `_pw.py fail <reason>`. "
+            + (f"Because `require_model_routing` is true, do not spawn without a model parameter; use the "
+               f"manual `/model {state.executor_model}` + `pw-resume` fallback instead."
+               if state.require_model_routing else
+               "If model routing is unavailable, spawning on the runtime-selected model is allowed by this preset.")
+        )
+        sysmsg = f"prewalk: capability-safe handoff requested for {state.executor_model}."
     else:
         action_line = (
-            f"ACTION: hand off now by spawning ONE Task (Agent tool) whose prompt is your handoff "
-            f"summary — the files you read, the full todo/plan, what task #1 proved, and exactly what "
-            f"remains. The prewalk hook will automatically route that Task onto the {state.executor_model} "
-            f"executor. Do not switch models yourself; do not do the remaining edits in this session."
+            f"ACTION: spawn ONE Task whose prompt is the structured Handoff Packet. The prewalk hook will "
+            f"route it onto {state.executor_model}; a PostToolUse hook will confirm success or restore the "
+            f"checkpoint after failure. Do not switch models yourself or do the remaining edits here."
         )
         sysmsg = f"prewalk: handoff requested — spawn a Task for the remaining work (executor {state.executor_model})."
     return HookAction(
-        additional_context=f"{HANDOFF_NOTE}\n\n{action_line}",
+        additional_context=f"{HANDOFF_NOTE}\n\nRequired packet:\n{HANDOFF_PACKET_TEMPLATE}\n\n{action_line}",
         system_message=sysmsg,
     )
+
+
+def on_handoff_confirm(store_file: str | os.PathLike[str], session_id: str) -> HookAction:
+    state = load_state(store_file, session_id)
+    if state is None or state.phase != HANDOFF_REQUESTED:
+        return HookAction(additional_context="No pending prewalk handoff can be confirmed.")
+    state.phase = EXECUTOR
+    state.handoff_done = True
+    state.handoff_routed = True
+    state.last_handoff_error = ""
+    save_state(store_file, state)
+    return HookAction(system_message=f"prewalk: handoff confirmed on {state.executor_model}.")
+
+
+def on_handoff_failed(
+    store_file: str | os.PathLike[str], session_id: str, reason: str = "handoff failed"
+) -> HookAction:
+    state = load_state(store_file, session_id)
+    if state is None or state.phase != HANDOFF_REQUESTED:
+        return HookAction(additional_context="No pending prewalk handoff can be failed.")
+    state.phase = PAUSED
+    state.handoff_done = False
+    state.handoff_routed = False
+    state.last_handoff_error = reason.strip() or "handoff failed"
+    save_state(store_file, state)
+    return HookAction(system_message="prewalk: handoff failed; checkpoint restored and `/pw-go` is retryable.")
+
+
+def on_executor_result(
+    store_file: str | os.PathLike[str], session_id: str, *, complete: bool, detail: str = ""
+) -> HookAction:
+    state = load_state(store_file, session_id)
+    if state is None:
+        return HookAction(additional_context="No active prewalk executor run was found.")
+    if state.phase != EXECUTOR:
+        return HookAction(additional_context="Prewalk cannot record an executor result before handoff confirmation.")
+    if complete:
+        planner = state.original_model
+        clear_state(store_file, session_id)
+        return HookAction(system_message=f"prewalk: executor completed all work. Restore `/model {planner}` if needed.")
+    state.phase = PAUSED
+    state.handoff_done = False
+    state.handoff_routed = False
+    state.last_handoff_error = detail.strip() or "executor stopped with work remaining"
+    save_state(store_file, state)
+    return HookAction(system_message="prewalk: executor incomplete; checkpoint restored for `/pw-go` or `/pw-revise`.")
 
 
 def on_pw_revise(store_file: str | os.PathLike[str], session_id: str, revision: str) -> HookAction:
@@ -622,6 +751,8 @@ def on_pw_revise(store_file: str | os.PathLike[str], session_id: str, revision: 
             )
         )
     # Stay paused; the frontier agent re-adds the ⏸️ checkpoint after revising.
+    state.last_handoff_error = ""
+    save_state(store_file, state)
     return HookAction(
         additional_context=(
             f"PREWALK REVISION: update the plan accordingly: {revision or '(no detail given)'}. "
@@ -686,6 +817,21 @@ def on_turn_end(store_file: str | os.PathLike[str], session_id: str) -> HookActi
     return None
 
 
+def on_fast_handoff(
+    store_file: str | os.PathLike[str], session_id: str, *, host: str
+) -> HookAction | None:
+    """Request one automatic handoff from a validated fast-mode checkpoint."""
+    state = load_state(store_file, session_id)
+    if state is None or state.phase != PAUSED or not state.auto_swap:
+        return None
+    requested = on_pw_go(store_file, session_id, host=host)
+    return HookAction(
+        proceed=False,
+        block_reason=requested.additional_context,
+        system_message=requested.system_message,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Host-agnostic state inspection (for /prewalk status)
 # ---------------------------------------------------------------------------
@@ -695,10 +841,14 @@ def describe(store_file: str | os.PathLike[str], session_id: str) -> str:
     if state is None:
         return "prewalk: idle (no armed run in this session)."
     return (
-        f"prewalk: {state.phase} [{state.preset}]\n"
-        f"  planner: {state.original_model}  →  executor: {state.executor_model}\n"
-        f"  auto_swap: {state.auto_swap}; pause_seen: {state.pause_seen}; "
-        f"todos_remaining: {state.todos_remaining}; blocked_edits: {state.blocked_edits}"
+        f"prewalk {VERSION}: {state.phase} [{state.preset}]\n"
+        f"  planner: {state.original_model} ({state.planner_thinking or 'default'})"
+        f"  ->  executor: {state.executor_model} ({state.executor_thinking or 'default'})\n"
+        f"  handoff_mode: {state.handoff_mode}; require_model_routing: "
+        f"{'yes' if state.require_model_routing else 'no'}; attempts: {state.handoff_attempts}; "
+        f"routed: {'yes' if state.handoff_routed else 'no'}\n"
+        f"  fast: {'yes' if state.auto_swap else 'no'}; evidence: {state.checkpoint_evidence or 'none'}; "
+        f"todos_remaining: {state.todos_remaining}; last_error: {state.last_handoff_error or 'none'}"
     )
 
 

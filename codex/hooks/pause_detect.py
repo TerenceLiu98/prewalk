@@ -34,17 +34,21 @@ def main() -> int:
     state = core.load_state(store, sid)
 
     # If we have todos and an active run, drive the checkpoint machine; the
-    # result may transition frontier→paused. Codex cannot switch models from a
-    # hook, so --no-pause does not provide an automatic Codex handoff.
+    # result may transition frontier->paused. Fast mode then blocks this Stop
+    # once with the handoff instruction, which creates a continuation turn.
     if todos and state is not None and state.phase in (
         core.FRONTIER, core.READY, core.PAUSED, core.EXECUTOR
     ):
         action = core.on_todos_changed(store, sid, todos)
+        state = core.load_state(store, sid)
+        if state is not None and state.phase == core.PAUSED and state.auto_swap:
+            action = core.on_fast_handoff(store, sid, host="codex")
         _common.emit(action, event="Stop")
         return 0
 
     # Otherwise: turn-end cleanup (trivial path / anomaly).
-    _common.emit(core.on_turn_end(store, sid), event="Stop")
+    action = core.on_fast_handoff(store, sid, host="codex")
+    _common.emit(action or core.on_turn_end(store, sid), event="Stop")
     return 0
 
 

@@ -1,6 +1,6 @@
 {
   "name": "prewalk",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Prewalk for Codex: a frontier model explores + plans + lands the first verified edit, then hands off to a cheaper executor subagent.",
   "author": {
     "name": "TerenceLiu98",
@@ -14,7 +14,7 @@
   "interface": {
     "displayName": "Prewalk",
     "shortDescription": "Frontier explores + plans + first edit, then cheap executor finishes",
-    "longDescription": "Prewalk: a high-capability model does the expensive part (explore + plan a capped todo + land the first verified edit), then hands off to a cheaper executor subagent that finishes the rest. ~50% cost, ~95% of frontier quality.",
+    "longDescription": "Prewalk: a high-capability model explores the repository, plans a capped todo list, and lands the first verified edit, then hands a structured packet to a configured executor that finishes the rest.",
     "developerName": "TerenceLiu98",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Write"]

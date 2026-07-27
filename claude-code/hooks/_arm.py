@@ -2,9 +2,10 @@
 """Claude Code prewalk arming / status / disarm helper, called by the /prewalk skill.
 
 Usage:
-  _arm.py arm    <session_id> [--preset NAME] [--no-pause] [task ...]
+  _arm.py arm    <session_id> [--preset NAME] [--fast] [task ...]
   _arm.py status <session_id>
   _arm.py disarm <session_id>
+  _arm.py doctor <session_id>
 
 Reads presets from ~/.claude/prewalk-presets.json. Writes per-session state to
 ~/.claude/prewalk-state.json (shared with the pause/edit hooks). Prints the
@@ -13,7 +14,9 @@ frontier instructions + the model pair for the skill to surface.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 import shlex
 import sys
 
@@ -38,7 +41,7 @@ def _parse_args(rest: list[str]) -> tuple[str | None, bool]:
         tok = tokens[index]
         if tok == "--":
             break
-        if tok == "--no-pause":
+        if tok in ("--no-pause", "--fast"):
             auto_swap = True
         elif tok == "--preset":
             if index + 1 >= len(tokens):
@@ -86,10 +89,41 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
     print(f"prewalk ARMED  [{preset.name}]  auto_swap={auto_swap}")
     print(f"  planner : {preset.planner_model}")
     print(f"  executor: {preset.executor_model}")
+    print(f"  thinking: {preset.planner_thinking or 'host default'} -> {preset.executor_thinking or 'host default'}")
+    print(f"  handoff : {preset.handoff_mode} (model routing required={preset.require_model_routing})")
     print()
     print("Switch this session to the planner now by running: /model " + preset.planner_model)
     print("Then follow the frontier protocol from the /prewalk skill.")
     return 0
+
+
+def cmd_doctor() -> int:
+    failures = 0
+
+    def check(ok: bool, label: str, detail: str = "") -> None:
+        nonlocal failures
+        print(f"{'PASS' if ok else 'FAIL'}  {label}" + (f": {detail}" if detail else ""))
+        failures += 0 if ok else 1
+
+    check(sys.version_info >= (3, 10), "Python", sys.version.split()[0])
+    check(core.VERSION == "0.3.0", "shared core", core.VERSION)
+    presets_path = Path(_common.presets_file())
+    presets = core.load_presets_json(presets_path)
+    if presets_path.is_file():
+        check(bool(presets), "preset parse", f"{len(presets)} preset(s) in {presets_path}")
+    else:
+        print(f"WARN  preset file: {presets_path} is absent; built-in defaults will be used")
+    manifest = Path(__file__).resolve().with_name("hooks.json")
+    try:
+        json.loads(manifest.read_text(encoding="utf-8"))
+        manifest_ok = True
+    except (OSError, json.JSONDecodeError):
+        manifest_ok = False
+    check(manifest_ok, "hook manifest", str(manifest))
+    store_parent = Path(_common.store_file()).parent
+    check(store_parent.is_dir() and os.access(store_parent, os.W_OK), "state directory", str(store_parent))
+    print("PASS  Task model routing: Claude PreToolUse updatedInput is configured")
+    return 1 if failures else 0
 
 
 def main() -> int:
@@ -107,6 +141,8 @@ def main() -> int:
     if sub == "disarm":
         print(core.disarm(store, session_id))
         return 0
+    if sub == "doctor":
+        return cmd_doctor()
     print("unknown subcommand: " + sub, file=sys.stderr)
     return 2
 

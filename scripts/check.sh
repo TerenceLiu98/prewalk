@@ -52,11 +52,15 @@ root = Path(sys.argv[2])
 settings = json.loads((tmp / "claude" / "settings.json").read_text(encoding="utf-8"))
 hooks = settings["hooks"]
 assert len(hooks["SessionStart"]) == 1
+assert len(hooks["Stop"]) == 1
 assert [group["matcher"] for group in hooks["PostToolUse"]] == [
     "TodoWrite|TaskCreate|TaskUpdate|TaskList",
-    "Write|Edit|MultiEdit",
+    "Write|Edit|MultiEdit|Bash|rp|RepoPrompt",
+    "Task|Agent",
 ]
-assert [group["matcher"] for group in hooks["PreToolUse"]] == ["Task"]
+assert [group["matcher"] for group in hooks["PreToolUse"]] == ["Task|Agent"]
+assert [group["matcher"] for group in hooks["PostToolUseFailure"]] == ["Task|Agent"]
+assert [group["matcher"] for group in hooks["PermissionDenied"]] == ["Task|Agent"]
 
 for skill in (tmp / "claude" / "skills").glob("*/SKILL.md"):
     text = skill.read_text(encoding="utf-8")

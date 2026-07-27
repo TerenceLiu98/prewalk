@@ -131,6 +131,54 @@ class HookAdapterTests(unittest.TestCase):
                 with self.subTest(adapter=adapter.__name__, payload=payload):
                     self.assertFalse(adapter.normalize_edit_success(payload))
 
+    def test_mutation_detection_distinguishes_commands_from_text(self) -> None:
+        true_fixtures = [
+            {"tool_name": "apply_patch", "tool_response": {"success": True}},
+            {
+                "tool_name": "functions.exec_command",
+                "tool_input": {"cmd": "cd src && apply_patch <<'PATCH'\nPATCH"},
+                "tool_response": {"ok": True},
+            },
+            {
+                "tool_name": "rp",
+                "tool_input": {"tool": "apply_edits", "args": {"path": "README.md"}},
+                "tool_response": {"success": True},
+            },
+        ]
+        false_fixtures = [
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo 'apply_patch <<PATCH'"},
+                "tool_response": {"success": True},
+            },
+            {
+                "tool_name": "exec_command",
+                "tool_input": {"cmd": "# apply_patch is documented here\nprintf done"},
+                "tool_response": {"ok": True},
+            },
+            {
+                "tool_name": "apply_patch",
+                "tool_response": {"success": True, "changed": False},
+            },
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "apply_patch <<PATCH"},
+                "tool_response": {"success": False},
+            },
+            {
+                "tool_name": "rp",
+                "tool_input": {"tool": "read_file", "args": {"path": "README.md"}},
+                "tool_response": {"success": True},
+            },
+        ]
+        for adapter in (self.codex, self.claude):
+            for payload in true_fixtures:
+                with self.subTest(adapter=adapter.__name__, payload=payload):
+                    self.assertTrue(adapter.normalize_mutation_success(payload))
+            for payload in false_fixtures:
+                with self.subTest(adapter=adapter.__name__, payload=payload):
+                    self.assertFalse(adapter.normalize_mutation_success(payload))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,7 @@ class ArmArgumentTests(unittest.TestCase):
             ["--preset code-value --no-pause refactor the hook"],
             ("code-value", True),
         )
+        self.assert_parses(["--fast refactor the hook"], (None, True))
 
     def test_task_text_stops_option_parsing(self) -> None:
         self.assert_parses(["document --no-pause and --preset fast"], (None, False))

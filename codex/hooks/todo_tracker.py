@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex prewalk hook (v0.2) — PostToolUse on update_plan|todo.
+"""Codex prewalk hook (v0.3) — PostToolUse on update_plan|todo.
 
 Tracks the todo list across the run: counts remaining items, notes the ⏸️ PAUSE
 checkpoint, and (in --no-pause auto mode) nudges the frontier to hand off by

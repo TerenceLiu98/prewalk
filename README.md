@@ -1,270 +1,214 @@
 # prewalk for Codex and Claude Code
 
-Prewalk uses a strong model for the expensive part of a coding task, then hands
-the remaining implementation to a cheaper model:
+Prewalk lets a strong planner do the expensive repository work, then gives a
+configured executor a verified starting point and a self-contained handoff:
 
 ```text
-strong planner -> explore -> plan -> first verified edit -> PAUSE
-                                                           |
-                                                     user reviews
-                                                           |
-                                                           v
-handoff summary -> cheap executor -> finish and verify the remaining tasks
+planner:  explore -> capped plan -> task 1 + verification -> PAUSE
+                                                            |
+                                              review or automatic fast mode
+                                                            |
+executor: structured packet -> remaining tasks -> verify -> COMPLETE / INCOMPLETE
 ```
 
-Use it for non-trivial work where understanding the repository is expensive.
-For a one-file fix or one or two small edits, use your normal coding workflow.
+Use it for changes where understanding the repository is a meaningful part of
+the work. Skip it for a one-file fix or one or two small edits.
 
-## The three commands
+## Start in three steps
 
-| Action | Codex | Claude Code |
-| --- | --- | --- |
-| Start a run | `$prewalk:prewalk <task>` | `/prewalk <task>` |
-| Accept the plan and hand off | `$prewalk:pw-go` | `/pw-go` |
-| Revise the plan first | `$prewalk:pw-revise <changes>` | `/pw-revise <changes>` |
-
-Codex may display short aliases such as `$prewalk` and `/pw-go`. Some clients
-also add a leading `/` to namespaced skill calls, for example
-`/$prewalk:prewalk`. These invoke the same plugin skills.
-
-## Quick start: Codex
-
-Prerequisite: Python 3 must be available as `python3`.
-
-### 1. Install
+### Codex
 
 ```sh
 codex plugin marketplace add TerenceLiu98/prewalk
 codex plugin add prewalk@prewalk-marketplace
 ```
 
-Restart Codex after installation.
-
-### 2. Start a task
-
-The default Codex preset uses `gpt-5.6-sol` as planner and `gpt-5.6-luna` as
-executor. Select the planner before starting the run:
+Restart Codex, select the planner reported by your preset, then run:
 
 ```text
 /model gpt-5.6-sol
-$prewalk:prewalk Add a settings page with tabbed sections and tests
-```
-
-The planner will explore the repository, create a capped todo list, complete
-and verify only task 1, then stop at a `PAUSE` checkpoint.
-
-### 3. Review and continue
-
-If the plan and first edit look right:
-
-```text
+$prewalk:prewalk Add a settings page with tests
 $prewalk:pw-go
 ```
 
-To change the plan instead:
+Before spawning, `pw-go` inspects the available `spawn_agent` capability. When
+the runtime cannot route an explicit executor model and the preset requires it,
+Prewalk directs you to `/model <executor>` followed by `$prewalk:pw-resume`.
 
-```text
-$prewalk:pw-revise Add a migration rollback test before the API work
-```
-
-Update an existing installation with:
-
-```sh
-codex plugin marketplace upgrade prewalk-marketplace
-```
-
-## Quick start: Claude Code
-
-Prerequisite: Python 3 must be available as `python3`.
-
-### 1. Install
+### Claude Code
 
 ```sh
 claude plugin marketplace add TerenceLiu98/prewalk
 claude plugin install prewalk@prewalk
 ```
 
-Restart Claude Code after installation.
-
-### 2. Start a task
-
-The built-in Claude Code fallback uses `opus` as planner and `haiku` as
-executor:
+Restart Claude Code, then run:
 
 ```text
 /model opus
-/prewalk Add a settings page with tabbed sections and tests
-```
-
-### 3. Review and continue
-
-```text
+/prewalk Add a settings page with tests
 /pw-go
 ```
 
-Or revise the plan before handoff:
+Claude rewrites one Task to the configured executor in `PreToolUse`, but does
+not confirm the handoff until the Task result returns successfully.
+
+## Commands
+
+| Action | Codex | Claude Code |
+| --- | --- | --- |
+| Start | `$prewalk:prewalk <task>` | `/prewalk <task>` |
+| Review and hand off | `$prewalk:pw-go` | `/pw-go` |
+| Revise the plan | `$prewalk:pw-revise <changes>` | `/pw-revise <changes>` |
+| Show state | `$prewalk:pw-status` | `/pw-status` |
+| Disarm | `$prewalk:pw-off` | `/pw-off` |
+| Diagnose setup | `$prewalk:pw-doctor` | `/pw-doctor` |
+| Resume manual/recovery handoff | `$prewalk:pw-resume` | `/pw-resume` |
+
+Clients may display shorter aliases or a leading slash, such as
+`/$prewalk:prewalk`. These refer to the same namespaced skills.
+
+Add `--preset <name>` before task text to select a model pair. Add `--fast`
+(legacy alias: `--no-pause`) to skip human review after the checkpoint:
 
 ```text
-/pw-revise Add a migration rollback test before the API work
+$prewalk:prewalk --preset backend --fast Optimize the job queue
+/prewalk --preset frontend Rebuild the dashboard and verify screenshots
 ```
 
-Update an existing installation with:
+Fast mode still validates the checkpoint and confirms routing. It only removes
+the wait for `pw-go`.
 
-```sh
-claude plugin marketplace update prewalk
+## What the planner must produce
+
+The planner explores the relevant entry points, configuration, tests, and local
+patterns. It creates at most the preset's `max_todos`; every real item includes
+a test/build/verify/check criterion. It then completes and verifies only task 1.
+
+The handoff is accepted only when the snapshot contains:
+
+- a non-empty, capped todo list;
+- task 1 marked `completed`;
+- a `PAUSE for handoff` item;
+- remaining work worth delegating.
+
+The planner stops with a structured Handoff Packet:
+
+```text
+Goal
+Files Read
+Constraints And Existing Patterns
+Full Todo List
+Task 1 Changes
+Verification Already Run
+Remaining Work
+Risks / Do Not Repeat
 ```
 
-## Configure model presets
+This packet, not the planner's raw context, becomes the executor's fresh
+context. The executor must finish with `PREWALK_COMPLETE` or
+`PREWALK_INCOMPLETE: <reason>`.
 
-Configuration is optional for the first run. Add it when the built-in model
-names do not exist in your environment or when you want multiple planner and
-executor pairs.
+## Configuration
 
-| Host | Config file | Format |
+Preset files are optional for a first run; each host has built-in fallbacks.
+Create one when the default model names do not exist in your environment or you
+want multiple routes.
+
+| Host | Optional preset file | Format |
 | --- | --- | --- |
 | Codex | `~/.codex/prewalk-presets.toml` | TOML |
 | Claude Code | `~/.claude/prewalk-presets.json` | JSON |
 
-If `CODEX_HOME` or `CLAUDE_CONFIG_DIR` is set, prewalk stores the corresponding
-config and state files there instead.
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` relocate both preset and state files.
+Templates are in [codex/presets.example.toml](codex/presets.example.toml) and
+[claude-code/presets.example.json](claude-code/presets.example.json).
 
-### Codex preset example
+A preset controls:
+
+| Field | Meaning |
+| --- | --- |
+| `planner`, `executor` | Host-resolvable model names |
+| `max_todos` | Maximum real tasks in the handoff plan |
+| `planner_thinking`, `executor_thinking` | Requested effort when the host exposes that control |
+| `handoff_mode` | `auto`, `spawn`, or `manual-model` |
+| `require_model_routing` | Refuse an unpinned executor spawn when `true` |
+
+Example TOML:
 
 ```toml
 default_preset = "code-value"
 
 [presets.code-value]
-description = "Strong planner, cheaper executor"
 planner = "gpt-5.6-sol"
 executor = "gpt-5.6-luna"
 max_todos = 12
+planner_thinking = "high"
+executor_thinking = "medium"
+handoff_mode = "auto"
+require_model_routing = true
 ```
 
-The full template is in
-[`codex/presets.example.toml`](codex/presets.example.toml).
+Thinking settings are capability declarations, not a promise that every host
+API can apply them. `pw-doctor` reports what can be checked statically; Codex's
+runtime spawn schema must be inspected at handoff time.
 
-### Claude Code preset example
-
-```json
-{
-  "default": "code-value",
-  "presets": {
-    "code-value": {
-      "description": "Strong planner, cheaper executor",
-      "planner": "opus",
-      "executor": "haiku",
-      "max_todos": 12
-    }
-  }
-}
-```
-
-The full template is in
-[`claude-code/presets.example.json`](claude-code/presets.example.json).
-
-Select a non-default preset by placing the option before the task text:
-
-```text
-$prewalk:prewalk --preset backend Optimize the job queue
-/prewalk --preset frontend Rebuild the dashboard from the reference screenshots
-```
-
-Task words are never interpreted as preset names. `--no-pause` is intended only
-for callers that already provide their own automatic handoff integration.
-
-## What happens during a run
-
-1. The planner checks whether the task is too small for prewalk.
-2. It reads the relevant entry points, configuration, tests, and local patterns.
-3. It creates at most the preset's `max_todos`; every task includes a concrete
-   verification step.
-4. It completes and verifies task 1 only.
-5. It writes a self-contained handoff summary and stops for review.
-6. After `pw-go`, a fresh executor context finishes the remaining tasks in
-   order, verifying each one before marking it complete.
-
-The checkpoint is deliberate. It lets you catch a bad plan while the strong
-planner still owns the context. Use `pw-revise` when the plan needs correction;
-do not start the remaining edits manually before handoff.
-
-## How handoff differs by host
+## Handoff and recovery
 
 | | Codex | Claude Code |
 | --- | --- | --- |
-| Who starts the executor? | The model calls native `spawn_agent` after `pw-go` | A hook rewrites the next Task spawn |
-| Executor context | Fresh context plus handoff summary | Fresh subagent plus handoff summary |
-| Model routing | `spawn_agent(model=..., fork_context=false)` | `PreToolUse.updatedInput` forces the configured model |
+| Route | Native `spawn_agent`, explicit model and fresh context when supported | Task input rewritten to executor model/subagent |
+| Confirmation | Skill confirms only after spawn succeeds | PostToolUse confirms only after Task returns |
+| Failure | Restores `paused`; `pw-go` is retryable | Restores `paused`; `pw-go` is retryable |
+| Incomplete executor | `pw-resume`, `pw-revise`, or retry | `pw-resume`, `pw-revise`, or retry |
 
-Some Codex runtimes do not expose a `model` argument on `spawn_agent`. The
-fresh-context handoff can still run, but the configured executor model cannot be
-guaranteed. In that case, use the documented fallback: switch to the executor
-with `/model <executor>` and continue the remaining todos in the current thread.
+`pw-status` shows the phase, model pair, routing attempts, checkpoint evidence,
+remaining todo count, and last error. `pw-off` clears only Prewalk state; it does
+not edit files or todos.
 
-Neither host gives the executor the planner's raw context. The handoff summary
-contains the files read, the full plan, what task 1 proved, and exactly what
-remains. This is what lets the executor continue without repeating broad
-exploration.
+State is stored per session in `prewalk-state.json`. Writes use a cross-process
+lock and atomic replacement. Malformed state is preserved as
+`prewalk-state.json.corrupt` before recovery.
 
-## Why it saves cost
+## Measure it locally
 
-Repository exploration is often more expensive than the final edits. A cheap
-executor that starts from only a plan may need to read the whole codebase again.
-Prewalk has the strong planner establish the implementation pattern with one
-verified edit, then gives the executor a focused summary and a pattern to
-imitate.
+Prewalk does not send telemetry and does not claim a universal cost reduction.
+Record comparable baseline and Prewalk runs locally:
 
-The technique comes from Can Boluk / Stencil's article
-["You only need the frontier model for one single edit"](https://stencil.so/blog/prewalk).
+```sh
+python3 scripts/benchmark.py record runs.jsonl --mode baseline --task "settings page" \
+  --input-tokens 12000 --output-tokens 3000 --duration-seconds 420 --passed
+python3 scripts/benchmark.py record runs.jsonl --mode prewalk --task "settings page" \
+  --input-tokens 8000 --output-tokens 2800 --duration-seconds 360 --passed
+python3 scripts/benchmark.py report runs.jsonl
+```
 
-## State and recovery
-
-Each host stores per-session state next to its preset file:
-
-- Codex: `~/.codex/prewalk-state.json`
-- Claude Code: `~/.claude/prewalk-state.json`
-
-Hook processes coordinate through a cross-process lock and atomic replacement.
-If a state file is malformed, prewalk preserves it as
-`prewalk-state.json.corrupt` and starts cleanly on the next update.
-
-Detailed host documentation:
-
-- [Codex implementation and hooks](codex/README.md)
-- [Claude Code implementation and hooks](claude-code/README.md)
+The report compares run count, pass rate, average total tokens, and duration.
 
 ## Development
 
-The implementation uses Python 3 and the standard library only. The canonical
-state machine is `_shared/prewalk_core.py`; each plugin vendors an identical
-copy under `hooks/_shared/`.
-
-Run the complete repository check with:
+The implementation uses Python 3.10+ and the standard library only. The
+canonical state machine is `_shared/prewalk_core.py`; both plugins vendor an
+identical copy.
 
 ```sh
 ./scripts/check.sh
 ```
 
-It runs unit and end-to-end tests, checks all shared-engine copies, validates
-JSON and shell entry points, and smoke-installs both host integrations.
+The check runs unit and end-to-end tests, validates manifests and shell entry
+points, compares shared-core copies, and smoke-installs both integrations. CI
+runs it on Linux and macOS across supported Python versions.
 
-## Repository layout
-
-```text
-prewalk/
-|-- _shared/prewalk_core.py          shared state machine
-|-- codex/                           Codex plugin, hooks, skills, presets
-|-- claude-code/                     Claude Code plugin, hooks, skills, presets
-|-- scripts/check.sh                 repository verification
-|-- tests/                           core, adapter, install, and E2E tests
-`-- install.sh                       loose-install helper
-```
+Detailed host notes: [Codex](codex/README.md) and
+[Claude Code](claude-code/README.md). Release history is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Attribution
 
-Reference implementations and mechanisms:
-
-- [westfable/hermes-prewalk](https://github.com/ildunari/hermes-prewalk) (MIT)
-- [Daniel-97/opencode-prewalk](https://github.com/Daniel-97/opencode-prewalk) (MIT)
-- [tzachbon/claude-model-router-hook](https://github.com/tzachbon/claude-model-router-hook) (MIT)
-
-This repository's shared engine and host adapters are original and MIT-licensed.
+The technique comes from Can Boluk / Stencil's
+["You only need the frontier model for one single edit"](https://stencil.so/blog/prewalk).
+Reference implementations and mechanisms include
+[westfable/hermes-prewalk](https://github.com/ildunari/hermes-prewalk),
+[Daniel-97/opencode-prewalk](https://github.com/Daniel-97/opencode-prewalk), and
+[tzachbon/claude-model-router-hook](https://github.com/tzachbon/claude-model-router-hook).
+This repository's shared engine and adapters are MIT-licensed.

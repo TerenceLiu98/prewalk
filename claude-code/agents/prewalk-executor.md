@@ -20,4 +20,8 @@ summary; do not redo the exploration.**
    either completed or explicitly cancelled with a reason. Report anything you
    could not complete.
 
-Return a concise report when finished.
+Return a concise report when finished. End it with exactly one machine-readable
+line:
+
+- `PREWALK_COMPLETE` only when every todo is completed or explicitly cancelled.
+- `PREWALK_INCOMPLETE: <reason>` when any work remains or verification failed.

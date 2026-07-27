@@ -1,7 +1,9 @@
 # Codex prewalk presets — planner (frontier) / executor (cheap) model pairs.
 # Copy to $CODEX_HOME/prewalk-presets.toml (~/.codex/prewalk-presets.toml) and edit.
-# The v0.2 design spawns the executor as a subagent on a fresh context; an in-thread
-# /model switch is kept as a fallback. Model ids below match the hermes-prewalk defaults;
+# v0.3 confirms a handoff before entering executor state. handoff_mode accepts
+# auto, spawn, or manual-model. Thinking is applied only when the host/tool
+# exposes that capability; otherwise Prewalk reports the required manual step.
+# Model ids below match the hermes-prewalk defaults;
 # change to what your Codex
 # install resolves (run `codex` then `/model` to see available ids, or `model/list`
 # via the app-server). The optional " @ effort" suffix in planner/executor is
@@ -14,33 +16,57 @@ description = "Fast + cheap: Sol @ high plans, Luna @ xhigh executes"
 planner = "gpt-5.6-sol"
 executor = "gpt-5.6-luna"
 max_todos = 12
+planner_thinking = "high"
+executor_thinking = "xhigh"
+handoff_mode = "auto"
+require_model_routing = true
 
 [presets.code-max]
 description = "Top quality: Sol @ high plans, Sol @ medium executes (same model, effort drop)"
 planner = "gpt-5.6-sol"
 executor = "gpt-5.6-sol"
 max_todos = 12
+planner_thinking = "high"
+executor_thinking = "medium"
+handoff_mode = "auto"
+require_model_routing = true
 
 [presets.reason]
 description = "Hard reasoning: Gemini 3.1 Pro plans, Luna executes"
 planner = "gemini-3.1-pro-preview"
 executor = "gpt-5.6-luna"
 max_todos = 12
+planner_thinking = "high"
+executor_thinking = "xhigh"
+handoff_mode = "auto"
+require_model_routing = true
 
 [presets.backend]
 description = "Backend/systems (text-only OK): Sol plans, GLM-5.2 executes"
 planner = "gpt-5.6-sol"
 executor = "glm-5.2"
 max_todos = 10
+planner_thinking = "high"
+executor_thinking = "high"
+handoff_mode = "auto"
+require_model_routing = true
 
 [presets.budget]
 description = "Open-weights (no vision): GLM-5.2 plans, Kimi K2.7-Code executes"
 planner = "glm-5.2"
 executor = "kimi-k2.7-code"
 max_todos = 10
+planner_thinking = "high"
+executor_thinking = "high"
+handoff_mode = "auto"
+require_model_routing = true
 
 [presets.speed]
 description = "Speed runs: same model, effort drop only — fastest handoff"
 planner = "grok-4.5"
 executor = "grok-4.5"
 max_todos = 8
+planner_thinking = "high"
+executor_thinking = "medium"
+handoff_mode = "auto"
+require_model_routing = true

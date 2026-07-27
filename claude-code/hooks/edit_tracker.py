@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Claude Code prewalk hook (v0.2) — PostToolUse on edits.
+"""Claude Code prewalk hook (v0.3) — PostToolUse mutation observer.
 
 When the frontier model lands its first successful edit, mark the run
-"handoff-ready". After that point, the handoff_router (PreToolUse on Task)
+checkpoint-ready. After `/pw-go`, the handoff_router (PreToolUse on Task)
 rewrites the next subagent spawn into a prewalk-executor with the executor
 model forced on.
 
@@ -30,7 +30,7 @@ def main() -> int:
     if state is None or state.phase != core.FRONTIER:
         return 0  # not arming, or already past frontier
 
-    if not _common.normalize_edit_success(payload):
+    if not _common.normalize_mutation_success(payload):
         return 0
 
     if not state.first_edit_landed:

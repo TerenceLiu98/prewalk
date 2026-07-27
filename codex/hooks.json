@@ -24,7 +24,7 @@
         ]
       },
       {
-        "matcher": "^(functions\\.)?(apply_patch|Edit|Write)$",
+        "matcher": "^(functions\\.)?(apply_patch|Edit|Write|exec_command|exec|Bash|rp|RepoPrompt)$",
         "hooks": [
           {
             "type": "command",

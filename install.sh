@@ -58,7 +58,7 @@ def cmd(p): return f'python3 "{os.path.join(hooks, p)}"'
 # the current set. Leave every unrelated user hook untouched.
 managed = {
     "export_session_id.py", "todo_tracker.py", "edit_tracker.py",
-    "handoff_router.py", "pause_detect.py", "edit_gate.py",
+    "handoff_router.py", "handoff_result.py", "pause_detect.py", "edit_gate.py",
 }
 def owned(group):
     commands = [entry.get("command", "") for entry in group.get("hooks", [])]
@@ -69,14 +69,25 @@ for event in list(h):
         del h[event]
 
 for ev, grp in {
+    "Stop": [{"hooks":[{"type":"command","command":cmd("pause_detect.py")}]}],
     "SessionStart": [{"hooks":[{"type":"command","command":cmd("export_session_id.py")}]}],
     "PostToolUse": [
         {"matcher":"TodoWrite|TaskCreate|TaskUpdate|TaskList",
          "hooks":[{"type":"command","command":cmd("todo_tracker.py")} ]},
-        {"matcher":"Write|Edit|MultiEdit",
+        {"matcher":"Write|Edit|MultiEdit|Bash|rp|RepoPrompt",
          "hooks":[{"type":"command","command":cmd("edit_tracker.py")} ]},
+        {"matcher":"Task|Agent",
+         "hooks":[{"type":"command","command":cmd("handoff_result.py")} ]},
     ],
-    "PreToolUse": [{"matcher":"Task","hooks":[{"type":"command","command":cmd("handoff_router.py")}]}],
+    "PostToolUseFailure": [
+        {"matcher":"Task|Agent",
+         "hooks":[{"type":"command","command":cmd("handoff_result.py")} ]},
+    ],
+    "PermissionDenied": [
+        {"matcher":"Task|Agent",
+         "hooks":[{"type":"command","command":cmd("handoff_result.py")} ]},
+    ],
+    "PreToolUse": [{"matcher":"Task|Agent","hooks":[{"type":"command","command":cmd("handoff_router.py")}]}],
 }.items():
     h.setdefault(ev, []).extend(grp)
 existing["hooks"] = h

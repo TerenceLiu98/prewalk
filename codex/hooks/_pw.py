@@ -4,6 +4,9 @@
 Usage:
   _pw.py go      <session_id>
   _pw.py revise  <session_id> [revision text...]
+  _pw.py confirm <session_id>
+  _pw.py fail    <session_id> [reason...]
+  _pw.py complete|incomplete <session_id> [detail...]
 
 Prints the handoff note or revision instructions (or a no-active-checkpoint
 message) for the skill to surface to the model.
@@ -38,6 +41,26 @@ def main() -> int:
     if sub == "revise":
         revision = " ".join(sys.argv[3:]).strip()
         action = core.on_pw_revise(store, session_id, revision)
+        print(action.additional_context or action.system_message)
+        return 0
+
+    if sub in ("confirm", "resume"):
+        action = core.on_handoff_confirm(store, session_id)
+        print(action.additional_context or action.system_message)
+        return 0
+
+    if sub == "fail":
+        action = core.on_handoff_failed(store, session_id, " ".join(sys.argv[3:]))
+        print(action.additional_context or action.system_message)
+        return 0
+
+    if sub in ("complete", "incomplete"):
+        action = core.on_executor_result(
+            store,
+            session_id,
+            complete=sub == "complete",
+            detail=" ".join(sys.argv[3:]),
+        )
         print(action.additional_context or action.system_message)
         return 0
 

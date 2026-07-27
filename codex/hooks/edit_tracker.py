@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Codex prewalk hook (v0.2) — PostToolUse on apply_patch.
+"""Codex prewalk hook (v0.3) — PostToolUse mutation observer.
 
 When the frontier model lands its first successful edit, mark the run
-"handoff-ready". After that point, `/pw-go` can hand off to the executor
+checkpoint-ready. After that point, `/pw-go` can hand off to the executor
 subagent.
 
 This replaces the old edit_gate (which blocked edits before a todo existed and
@@ -33,7 +33,7 @@ def main() -> int:
     if state is None or state.phase != core.FRONTIER:
         return 0  # not arming, or already past frontier
 
-    if not _common.normalize_edit_success(payload):
+    if not _common.normalize_mutation_success(payload):
         return 0
 
     if not state.first_edit_landed:

@@ -81,6 +81,11 @@ class EndToEndFlowTests(unittest.TestCase):
         handoff = self.run_script("codex", "_pw.py", "go", session_id)
         self.assertIn("spawn_agent", handoff.stdout)
         self.assertIn("fork_context", handoff.stdout)
+        pending = self.run_script("codex", "_arm.py", "status", session_id)
+        self.assertIn("handoff_requested", pending.stdout)
+
+        confirmed = self.run_script("codex", "_pw.py", "confirm", session_id)
+        self.assertIn("confirmed", confirmed.stdout)
 
         self.run_script(
             "codex",
@@ -89,6 +94,26 @@ class EndToEndFlowTests(unittest.TestCase):
         )
         status = self.run_script("codex", "_arm.py", "status", session_id)
         self.assertIn("idle", status.stdout)
+
+    def test_codex_failed_handoff_is_retryable(self) -> None:
+        session_id = "codex-retry"
+        self.run_script("codex", "_arm.py", "arm", session_id, "Build the feature")
+        todos = self.todo_payload(session_id, "codex")
+        self.run_script("codex", "todo_tracker.py", payload=todos)
+        self.run_script("codex", "edit_tracker.py", payload={
+            "session_id": session_id,
+            "tool_response": {"ok": True},
+        })
+        self.run_script("codex", "pause_detect.py", payload=dict(todos, hook_event_name="Stop"))
+        self.run_script("codex", "_pw.py", "go", session_id)
+
+        failed = self.run_script(
+            "codex", "_pw.py", "fail", session_id, "spawn schema has no model"
+        )
+        self.assertIn("retryable", failed.stdout)
+        status = self.run_script("codex", "_arm.py", "status", session_id)
+        self.assertIn("paused", status.stdout)
+        self.assertIn("spawn schema has no model", status.stdout)
 
     def test_claude_scripts_route_and_complete_a_full_handoff(self) -> None:
         session_id = "claude-e2e"
@@ -105,7 +130,7 @@ class EndToEndFlowTests(unittest.TestCase):
             "tool_response": {"filePath": "/tmp/example", "success": True},
         })
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
-        self.assertIn("spawning ONE Task", handoff.stdout)
+        self.assertIn("spawn ONE Task", handoff.stdout)
 
         routed = self.run_script("claude-code", "handoff_router.py", payload={
             "session_id": session_id,
@@ -115,14 +140,56 @@ class EndToEndFlowTests(unittest.TestCase):
         updated = output["hookSpecificOutput"]["updatedInput"]
         self.assertEqual(updated["model"], "haiku")
         self.assertEqual(updated["subagent_type"], "prewalk:prewalk-executor")
+        pending = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("handoff_requested", pending.stdout)
+        self.assertIn("routed: yes", pending.stdout)
 
-        self.run_script(
-            "claude-code",
-            "todo_tracker.py",
-            payload=self.todo_payload(session_id, "claude-code", completed=True),
-        )
+        self.run_script("claude-code", "handoff_result.py", payload={
+            "session_id": session_id,
+            "tool_response": {"success": True, "content": "Done\nPREWALK_COMPLETE"},
+        })
         status = self.run_script("claude-code", "_arm.py", "status", session_id)
         self.assertIn("idle", status.stdout)
+
+    def test_claude_failed_task_restores_retryable_checkpoint(self) -> None:
+        session_id = "claude-retry"
+        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"),
+        )
+        self.run_script("claude-code", "_pw.py", "go", session_id)
+        self.run_script("claude-code", "handoff_router.py", payload={
+            "session_id": session_id,
+            "tool_input": {"prompt": "Finish the remaining plan"},
+        })
+        self.run_script("claude-code", "handoff_result.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PostToolUseFailure",
+            "error": "model unavailable",
+        })
+        status = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("paused", status.stdout)
+        self.assertIn("model unavailable", status.stdout)
+
+    def test_claude_fast_mode_requests_handoff_from_stop_hook(self) -> None:
+        session_id = "claude-fast"
+        self.run_script(
+            "claude-code", "_arm.py", "arm", session_id, "--fast Build the feature"
+        )
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"),
+        )
+        stopped = self.run_script("claude-code", "pause_detect.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "Stop",
+        })
+        output = json.loads(stopped.stdout)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("spawn ONE Task", output["reason"])
+        status = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("handoff_requested", status.stdout)
 
 
 if __name__ == "__main__":

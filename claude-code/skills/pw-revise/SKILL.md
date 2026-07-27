@@ -18,8 +18,8 @@ Then follow its output:
 - **Update the todo list** to reflect the requested changes (each item still
   needs a concrete file path + a verification word).
 - **Re-verify task #1** only if the revision changed it.
-- **Re-add the `⏸️ PAUSE` checkpoint todo** (content starting with `⏸️ PAUSE`,
-  marked in_progress) and **STOP** again with an updated 3–5 line summary.
+- **Re-add the `PAUSE` checkpoint todo** (content starting with `PAUSE`, marked
+  in_progress) and **STOP** again with an updated structured Handoff Packet.
 
 You stay on the frontier (planner) model. When the revised plan is ready, the
 user runs `/pw-go` to hand off. If the script says there is no active

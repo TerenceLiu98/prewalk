@@ -38,6 +38,19 @@ class PrewalkCoreTests(unittest.TestCase):
         core.save_state(self.store, state)
         return state
 
+    def checkpoint_run(self) -> core.PrewalkState:
+        self.start_ready_run()
+        action = core.on_todos_changed(self.store, self.session_id, [
+            core.Todo("1", "Update core and test", "completed"),
+            core.Todo("2", "Update adapters and verify", "pending"),
+            core.Todo("3", "Update docs and check", "pending"),
+            core.Todo("pause", "PAUSE for handoff", "in_progress"),
+        ])
+        self.assertEqual(action.system_message, core.PAUSED_HINT)
+        state = core.load_state(self.store, self.session_id)
+        self.assertIsNotNone(state)
+        return state
+
     def test_ready_checkpoint_stays_ready_and_surfaces_pause_hint(self) -> None:
         self.start_ready_run()
         todos = [
@@ -53,34 +66,97 @@ class PrewalkCoreTests(unittest.TestCase):
         self.assertEqual(action.system_message, core.PAUSED_HINT)
         state = core.load_state(self.store, self.session_id)
         self.assertIsNotNone(state)
-        self.assertEqual(state.phase, core.READY)
+        self.assertEqual(state.phase, core.PAUSED)
         self.assertEqual(state.todos_remaining, 2)
+        self.assertEqual(state.checkpoint_evidence, "observed-edit")
+
+    def test_checkpoint_rejects_an_incomplete_task_one(self) -> None:
+        self.start_ready_run()
+
+        action = core.on_todos_changed(self.store, self.session_id, [
+            core.Todo("1", "Update core and test", "in_progress"),
+            core.Todo("2", "Update adapters and verify", "pending"),
+            core.Todo("pause", "PAUSE for handoff", "in_progress"),
+        ])
+
+        self.assertIn("task #1 must be completed", action.system_message)
+        self.assertEqual(core.load_state(self.store, self.session_id).phase, core.READY)
 
     def test_codex_handoff_is_explicit_and_idempotent(self) -> None:
-        self.start_ready_run()
+        self.checkpoint_run()
 
         action = core.on_pw_go(self.store, self.session_id, host="codex")
 
-        self.assertIn("`model` set to `executor-model`", action.additional_context)
-        self.assertIn("`fork_context` set to `false`", action.additional_context)
+        self.assertIn("`model=executor-model`", action.additional_context)
+        self.assertIn("`fork_context=false`", action.additional_context)
         state = core.load_state(self.store, self.session_id)
         self.assertIsNotNone(state)
-        self.assertEqual(state.phase, core.EXECUTOR)
-        self.assertTrue(state.handoff_done)
+        self.assertEqual(state.phase, core.HANDOFF_REQUESTED)
+        self.assertFalse(state.handoff_done)
 
         duplicate = core.on_pw_go(self.store, self.session_id, host="codex")
-        self.assertIn("already handed off", duplicate.additional_context)
+        self.assertIn("pending confirmation", duplicate.additional_context)
+
+        confirmed = core.on_handoff_confirm(self.store, self.session_id)
+        self.assertIn("confirmed", confirmed.system_message)
+        self.assertEqual(core.load_state(self.store, self.session_id).phase, core.EXECUTOR)
+
+    def test_failed_handoff_and_incomplete_executor_restore_checkpoint(self) -> None:
+        self.checkpoint_run()
+        core.on_pw_go(self.store, self.session_id, host="codex")
+
+        failed = core.on_handoff_failed(self.store, self.session_id, "tool schema has no model")
+        self.assertIn("retryable", failed.system_message)
+        state = core.load_state(self.store, self.session_id)
+        self.assertEqual(state.phase, core.PAUSED)
+        self.assertEqual(state.last_handoff_error, "tool schema has no model")
+
+        core.on_pw_go(self.store, self.session_id, host="codex")
+        core.on_handoff_confirm(self.store, self.session_id)
+        incomplete = core.on_executor_result(
+            self.store, self.session_id, complete=False, detail="two todos remain"
+        )
+        self.assertIn("incomplete", incomplete.system_message)
+        self.assertEqual(core.load_state(self.store, self.session_id).phase, core.PAUSED)
+
+    def test_executor_result_cannot_clear_an_unconfirmed_handoff(self) -> None:
+        self.checkpoint_run()
+        core.on_pw_go(self.store, self.session_id, host="codex")
+
+        action = core.on_executor_result(self.store, self.session_id, complete=True)
+
+        self.assertIn("before handoff confirmation", action.additional_context)
+        self.assertEqual(core.load_state(self.store, self.session_id).phase, core.HANDOFF_REQUESTED)
 
     def test_claude_handoff_waits_for_router_confirmation(self) -> None:
-        self.start_ready_run()
+        self.checkpoint_run()
 
         action = core.on_pw_go(self.store, self.session_id, host="claude")
 
-        self.assertIn("spawning ONE Task", action.additional_context)
+        self.assertIn("spawn ONE Task", action.additional_context)
         state = core.load_state(self.store, self.session_id)
         self.assertIsNotNone(state)
-        self.assertEqual(state.phase, core.READY)
+        self.assertEqual(state.phase, core.HANDOFF_REQUESTED)
         self.assertFalse(state.handoff_done)
+
+    def test_fast_mode_requests_handoff_once_at_turn_end(self) -> None:
+        state = core.start_run(self.store, self.session_id, self.preset, auto_swap=True)
+        state.phase = core.READY
+        state.first_edit_landed = True
+        core.save_state(self.store, state)
+        checkpoint = core.on_todos_changed(self.store, self.session_id, [
+            core.Todo("1", "Update core and test", "completed"),
+            core.Todo("2", "Update adapters and verify", "pending"),
+            core.Todo("3", "Update docs and check", "pending"),
+            core.Todo("pause", "PAUSE for handoff", "in_progress"),
+        ])
+        self.assertIn("Stop hook", checkpoint.system_message)
+
+        action = core.on_fast_handoff(self.store, self.session_id, host="codex")
+        self.assertFalse(action.proceed)
+        self.assertIn("spawn_agent", action.block_reason)
+        self.assertEqual(core.load_state(self.store, self.session_id).phase, core.HANDOFF_REQUESTED)
+        self.assertIsNone(core.on_fast_handoff(self.store, self.session_id, host="codex"))
 
     def test_corrupt_store_is_quarantined_and_recovers(self) -> None:
         self.store.write_text('{"broken":', encoding="utf-8")
@@ -92,6 +168,26 @@ class PrewalkCoreTests(unittest.TestCase):
         state = core.start_run(self.store, self.session_id, self.preset, auto_swap=False)
         self.assertEqual(core.load_state(self.store, self.session_id), state)
         self.assertIsInstance(json.loads(self.store.read_text(encoding="utf-8")), dict)
+
+    def test_preset_parsers_load_handoff_and_thinking_capabilities(self) -> None:
+        toml_path = Path(self.temp_dir.name) / "presets.toml"
+        toml_path.write_text(
+            '\n'.join([
+                '[presets.fast]',
+                'planner = "planner"',
+                'executor = "executor"',
+                'planner_thinking = "high"',
+                'executor_thinking = "low"',
+                'handoff_mode = "manual-model"',
+                'require_model_routing = false',
+            ]),
+            encoding="utf-8",
+        )
+        preset = core.load_presets_toml(toml_path)["fast"]
+        self.assertEqual(preset.planner_thinking, "high")
+        self.assertEqual(preset.executor_thinking, "low")
+        self.assertEqual(preset.handoff_mode, "manual-model")
+        self.assertFalse(preset.require_model_routing)
 
     def test_concurrent_processes_preserve_all_sessions(self) -> None:
         script = """

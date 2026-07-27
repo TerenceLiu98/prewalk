@@ -8,30 +8,50 @@
       "description": "Balanced: Fable/Opus plans, Haiku executes",
       "planner": "opus",
       "executor": "haiku",
+      "planner_thinking": "high",
+      "executor_thinking": "low",
+      "handoff_mode": "spawn",
+      "require_model_routing": true,
       "max_todos": 12
     },
     "code-max": {
       "description": "Top quality: Fable plans at high, Sonnet executes",
       "planner": "fable",
       "executor": "sonnet",
+      "planner_thinking": "high",
+      "executor_thinking": "medium",
+      "handoff_mode": "spawn",
+      "require_model_routing": true,
       "max_todos": 12
     },
     "frontend": {
       "description": "Vision-capable executor for screenshot-driven UI iteration",
       "planner": "fable",
       "executor": "sonnet",
+      "planner_thinking": "high",
+      "executor_thinking": "medium",
+      "handoff_mode": "spawn",
+      "require_model_routing": true,
       "max_todos": 12
     },
     "backend": {
       "description": "Text-only backend/systems; cheap Haiku executor",
       "planner": "opus",
       "executor": "haiku",
+      "planner_thinking": "high",
+      "executor_thinking": "low",
+      "handoff_mode": "spawn",
+      "require_model_routing": true,
       "max_todos": 10
     },
     "speed": {
       "description": "Same model, effort drop only — fastest handoff",
       "planner": "sonnet",
       "executor": "haiku",
+      "planner_thinking": "medium",
+      "executor_thinking": "low",
+      "handoff_mode": "spawn",
+      "require_model_routing": true,
       "max_todos": 8
     }
   }

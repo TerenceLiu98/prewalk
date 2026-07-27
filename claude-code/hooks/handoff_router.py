@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code prewalk hook (v0.2) — PreToolUse on Task (the handoff engine).
+"""Claude Code prewalk hook — route a requested Task to the executor.
 
 This is the core of the subagent-routing design, borrowed from
 tzachbon/claude-model-router-hook. Claude Code cannot switch the running
@@ -11,11 +11,10 @@ forced on.
 
 Flow:
   - frontier (main session) explores + plans + lands edit #1
-  - edit_tracker sets phase="ready" on the first successful edit
-  - the frontier's next Task spawn (or the user's /pw-go) is rewritten here into
+  - /pw-go sets phase="handoff_requested"
+  - the frontier's next Task spawn is rewritten here into
     { subagent_type: "prewalk-executor", model: <executor>, prompt: <handoff> }
-  - once handed off, phase="executor"; subsequent Task spawns are left alone so
-    the executor can spawn its own helpers if needed.
+  - PostToolUse confirms the actual Task result; this hook never claims success.
 
 Never denies: emits permissionDecision "allow" + updatedInput, or exits 0.
 """
@@ -73,8 +72,9 @@ def main() -> int:
     if not isinstance(tool_input, dict):
         return 0
 
-    # Only hand off once; after that the executor owns the work.
-    if state.phase != core.READY or state.handoff_done:
+    # /pw-go must explicitly request the handoff. PreToolUse only routes it;
+    # PostToolUse owns confirmation because the Task may still fail or time out.
+    if state.phase != core.HANDOFF_REQUESTED or state.handoff_done or state.handoff_routed:
         return 0
 
     executor_model = state.executor_model
@@ -90,8 +90,7 @@ def main() -> int:
     updated["prompt"] = (_handoff_prompt(state) + "\n\n--- Task ---\n" + existing_prompt).strip()
     updated.pop("description", None)
 
-    state.phase = core.EXECUTOR
-    state.handoff_done = True
+    state.handoff_routed = True
     core.save_state(store, state)
 
     out = {
@@ -101,8 +100,8 @@ def main() -> int:
             "updatedInput": updated,
         },
         "systemMessage": (
-            f"prewalk: handoff → spawned {EXECUTOR_AGENT} on {executor_model} "
-            f"(remaining todos: {state.todos_remaining})"
+            f"prewalk: routed Task to {EXECUTOR_AGENT} on {executor_model}; "
+            "waiting for the Task result before confirming handoff"
         ),
     }
     sys.stdout.write(json.dumps(out, ensure_ascii=False))

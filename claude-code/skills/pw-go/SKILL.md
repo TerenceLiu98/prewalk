@@ -1,28 +1,26 @@
 ---
 name: pw-go
-description: Prewalk handoff — confirm the plan and switch to the cheaper executor model so it can finish the remaining todos on the inherited trajectory. Run this at the ⏸️ PAUSE checkpoint.
+description: Request the reviewed prewalk handoff and spawn exactly one routed Claude Task for the remaining todos.
 ---
 
-# /pw-go — hand off to the executor
+# Prewalk Handoff
 
-Run this to advance the prewalk state machine and get the handoff instructions:
+Run:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_pw.py" go "$CLAUDE_SESSION_ID"
 ```
 
-It prints either a handoff note (if you are at the ⏸️ checkpoint) or a message
-saying there is no active checkpoint. Read its output and follow it exactly.
+If there is no active checkpoint, report that and stop. If a handoff is already
+pending, do not spawn another Task.
 
-## If it returned a handoff
+For a new handoff request, spawn exactly one `Task`/`Agent` using the complete
+structured Handoff Packet as its prompt. The PreToolUse hook rewrites that Task
+to the configured `prewalk-executor` and executor model. Do not edit remaining
+work in the main session and do not report success before the Task returns.
 
-1. Spawn exactly one Task (Agent tool) with the complete handoff summary as its
-   prompt. The prewalk hook rewrites that spawn onto the configured executor
-   model and `prewalk-executor` subagent.
-2. Do not switch the main session's model and do not perform the remaining edits
-   in the main session. Let the executor finish the todos and report its result.
+The PostToolUse hook owns the result:
 
-## If it said there is no active checkpoint
-
-Reply with a single line saying so and end your turn. Do not touch the todo
-list or any file.
+- `PREWALK_COMPLETE` clears the run.
+- `PREWALK_INCOMPLETE: <reason>` restores the checkpoint for revision or retry.
+- rejection, failure, or a missing marker also restores a retryable checkpoint.
