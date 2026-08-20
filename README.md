@@ -16,7 +16,7 @@ the work. Skip it for a one-file fix or one or two small edits.
 
 ## Start in three steps
 
-Prewalk 0.3.1 requires Python 3.10+, Codex CLI 0.146.0+, or Claude Code
+Prewalk 0.4.0 requires Python 3.10+, Codex CLI 0.146.0+, or Claude Code
 2.1.145+. Upgrade the host CLI before installing when it is older.
 
 ### Codex
@@ -67,6 +67,9 @@ claude plugin update prewalk@prewalk
 ```
 
 Restart the host after upgrading so the new hooks and skills are loaded.
+Users upgrading from 0.3.1 should read the [0.4.0 migration guide](MIGRATION.md)
+before their first run; v3 state is intentionally reset and legacy planner
+fields no longer configure the active session.
 
 ## Commands
 
@@ -221,7 +224,8 @@ runs it on Linux and macOS across supported Python versions.
 
 Detailed host notes: [Codex](codex/README.md) and
 [Claude Code](claude-code/README.md). Release history is in
-[CHANGELOG.md](CHANGELOG.md). The accepted 0.4.0 lifecycle contract is
+[CHANGELOG.md](CHANGELOG.md), and upgrade details are in
+[MIGRATION.md](MIGRATION.md). The accepted 0.4.0 lifecycle contract is
 [ADR 0001](docs/adr/0001-v4-native-workflow.md).
 
 ## Attribution

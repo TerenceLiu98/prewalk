@@ -43,7 +43,7 @@ HANDOFF_REQUESTED = "handoff_requested"
 EXECUTOR = "executor"
 RESTORING = "restoring"
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 DEFAULT_MAX_TODOS = 12
 DEFAULT_PRESET = "code-value"
 HANDOFF_MODES = ("auto", "spawn", "manual-model")

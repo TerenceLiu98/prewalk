@@ -97,21 +97,21 @@ check_claude() {
   [[ "$inline_details" == *"Skills (9)"* ]]
   [[ "$inline_details" == *"prewalk, pw-doctor, pw-go"* ]]
 
-  prepare_upgrade_fixture "$TMP/claude-market" claude 0.3.0
+  prepare_upgrade_fixture "$TMP/claude-market" claude 0.3.1
   (
     cd "$TMP/claude-market"
     CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin marketplace add ./
   )
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin install prewalk@prewalk
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin list --json >"$TMP/claude-old.json"
-  assert_plugin_version "$TMP/claude-old.json" claude 0.3.0
-  prepare_upgrade_fixture "$TMP/claude-market" claude 0.3.1
+  assert_plugin_version "$TMP/claude-old.json" claude 0.3.1
+  prepare_upgrade_fixture "$TMP/claude-market" claude 0.4.0
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin marketplace update prewalk
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin update prewalk@prewalk
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin list --json >"$TMP/claude-new.json"
-  assert_plugin_version "$TMP/claude-new.json" claude 0.3.1
+  assert_plugin_version "$TMP/claude-new.json" claude 0.4.0
   echo "PASS native contract: Claude $version; 9 skills, 1 agent, plugin-dir loader"
-  echo "PASS native upgrade: Claude 0.3.0 -> 0.3.1"
+  echo "PASS native upgrade: Claude 0.3.1 -> 0.4.0"
 }
 
 check_codex() {
@@ -135,7 +135,7 @@ data = json.load(open(sys.argv[1], encoding="utf-8"))
 matches = [item for item in data["installed"] if item["pluginId"] == "prewalk@prewalk-marketplace"]
 assert len(matches) == 1 and matches[0]["installed"] and matches[0]["enabled"]
 PY
-  prepare_upgrade_fixture "$TMP/codex-market" codex 0.3.0
+  prepare_upgrade_fixture "$TMP/codex-market" codex 0.3.1
   mkdir -p "$TMP/codex-upgrade"
   (
     cd "$TMP/codex-market"
@@ -143,15 +143,15 @@ PY
   )
   CODEX_HOME="$TMP/codex-upgrade" codex plugin add prewalk@prewalk-marketplace --json >/dev/null
   CODEX_HOME="$TMP/codex-upgrade" codex plugin list --json >"$TMP/codex-old.json"
-  assert_plugin_version "$TMP/codex-old.json" codex 0.3.0
-  prepare_upgrade_fixture "$TMP/codex-market" codex 0.3.1
+  assert_plugin_version "$TMP/codex-old.json" codex 0.3.1
+  prepare_upgrade_fixture "$TMP/codex-market" codex 0.4.0
   # Local marketplace fixtures refresh through plugin add; the upgrade command
   # intentionally accepts Git marketplaces only.
   CODEX_HOME="$TMP/codex-upgrade" codex plugin add prewalk@prewalk-marketplace --json >/dev/null
   CODEX_HOME="$TMP/codex-upgrade" codex plugin list --json >"$TMP/codex-new.json"
-  assert_plugin_version "$TMP/codex-new.json" codex 0.3.1
+  assert_plugin_version "$TMP/codex-new.json" codex 0.4.0
   echo "PASS native contract: Codex $version; isolated marketplace install discovered"
-  echo "PASS native upgrade: Codex 0.3.0 -> 0.3.1"
+  echo "PASS native upgrade: Codex 0.3.1 -> 0.4.0"
 }
 
 case "$TARGET" in

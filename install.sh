@@ -105,7 +105,7 @@ print(f"✓ merged hooks → {path}")
 PY
 
   echo
-  echo "Done. Edit $CFG/prewalk-presets.json (planner/executor models), then restart Claude Code."
+  echo "Done. Edit $CFG/prewalk-presets.json (executor routes), then restart Claude Code."
 }
 
 install_codex() {
