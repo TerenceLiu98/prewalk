@@ -16,6 +16,9 @@ the work. Skip it for a one-file fix or one or two small edits.
 
 ## Start in three steps
 
+Prewalk 0.3.1 requires Python 3.10+, Codex CLI 0.146.0+, or Claude Code
+2.1.145+. Upgrade the host CLI before installing when it is older.
+
 ### Codex
 
 ```sh
@@ -52,6 +55,20 @@ Restart Claude Code, then run:
 
 Claude rewrites only the token-bearing Agent call, binds its lifecycle identity,
 and accepts a completion marker only from that executor's `SubagentStop` event.
+
+## Upgrade
+
+```sh
+# Codex
+codex plugin marketplace upgrade prewalk-marketplace
+codex plugin add prewalk@prewalk-marketplace
+
+# Claude Code
+claude plugin marketplace update prewalk
+claude plugin update prewalk@prewalk
+```
+
+Restart the host after upgrading so the new hooks and skills are loaded.
 
 ## Commands
 

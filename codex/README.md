@@ -73,4 +73,7 @@ suffix.
 
 ```sh
 codex plugin marketplace upgrade prewalk-marketplace
+codex plugin add prewalk@prewalk-marketplace
 ```
+
+Restart Codex after updating.
