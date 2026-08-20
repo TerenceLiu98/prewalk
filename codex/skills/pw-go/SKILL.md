@@ -18,9 +18,11 @@ If no active checkpoint exists, report that in one line and stop.
 1. Inspect the actual `spawn_agent` schema. If the helper requires model routing
    and the schema has no `model` parameter, do not spawn. Tell the user to run
    `/model <executor>` and then `$prewalk:pw-resume`.
-2. When routing is supported, call `spawn_agent` exactly once with the complete
-   structured Handoff Packet as its instruction, the configured executor model,
-   and the runtime's fresh-context option. Do not use a named plugin agent.
+2. When routing is supported, call `spawn_agent` exactly once with the generated
+   `task_name`, the complete structured Handoff Packet as `message`,
+   `fork_turns: "none"`, and the configured executor `model`. Include
+   `reasoning_effort` only when the exposed schema supports it. Do not use a
+   named plugin agent.
 3. If spawning fails, restore the checkpoint immediately:
 
 ```bash

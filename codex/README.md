@@ -36,8 +36,8 @@ inspects the runtime `spawn_agent` schema:
 
 ```text
 validated PAUSE -> handoff_requested
-  -> schema has model + fresh-context controls
-     -> spawn once -> confirm -> executor
+  -> schema has model + fork_turns controls
+     -> spawn once with fork_turns="none" -> confirm -> executor
   -> required model control is absent
      -> mark spawn attempt failed -> restore paused
      -> /model <executor> -> pw-resume

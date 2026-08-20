@@ -88,7 +88,9 @@ class EndToEndFlowTests(unittest.TestCase):
 
         handoff = self.run_script("codex", "_pw.py", "go", session_id)
         self.assertIn("spawn_agent", handoff.stdout)
-        self.assertIn("fork_context", handoff.stdout)
+        self.assertIn('task_name="prewalk_executor_1"', handoff.stdout)
+        self.assertIn('fork_turns="none"', handoff.stdout)
+        self.assertIn('model="gpt-5.6-luna"', handoff.stdout)
         pending = self.run_script("codex", "_arm.py", "status", session_id)
         self.assertIn("handoff_requested", pending.stdout)
 

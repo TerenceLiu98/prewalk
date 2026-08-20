@@ -24,6 +24,7 @@ class PrewalkCoreTests(unittest.TestCase):
             name="test",
             planner_model="planner-model",
             executor_model="executor-model",
+            executor_thinking="medium",
         )
 
     def start_ready_run(self) -> core.PrewalkState:
@@ -87,8 +88,10 @@ class PrewalkCoreTests(unittest.TestCase):
 
         action = core.on_pw_go(self.store, self.session_id, host="codex")
 
-        self.assertIn("`model=executor-model`", action.additional_context)
-        self.assertIn("`fork_context=false`", action.additional_context)
+        self.assertIn("`model=\"executor-model\"`", action.additional_context)
+        self.assertIn("`task_name=\"prewalk_executor_1\"`", action.additional_context)
+        self.assertIn("`fork_turns=\"none\"`", action.additional_context)
+        self.assertIn("`reasoning_effort=\"medium\"`", action.additional_context)
         state = core.load_state(self.store, self.session_id)
         self.assertIsNotNone(state)
         self.assertEqual(state.phase, core.HANDOFF_REQUESTED)

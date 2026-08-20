@@ -5,8 +5,8 @@
 # and supplies the instructions in the spawn message. Keep this file in sync
 # with that policy for humans and future Codex runtimes.
 #
-# Spawn from the parent agent via spawn_agent(message=..., model=...,
-# fork_context=false).
+# Spawn from the parent agent via spawn_agent(task_name=..., message=...,
+# fork_turns="none", model=..., reasoning_effort=... when supported).
 
 model = "gpt-5.6-luna"
 effort = "xhigh"
