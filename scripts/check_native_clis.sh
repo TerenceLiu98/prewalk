@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${1:-all}"
 REQUIRE="${PREWALK_REQUIRE_NATIVE_CLIS:-0}"
 if [[ "${PREWALK_SKIP_NATIVE_CLIS:-0}" == "1" ]]; then
-  echo "SKIP native contracts: covered by the dedicated minimum/latest CLI jobs"
+  echo "PASS native contracts delegated to required minimum/latest CLI jobs"
   exit 0
 fi
 cd "$ROOT"
