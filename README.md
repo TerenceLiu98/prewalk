@@ -218,7 +218,8 @@ runs it on Linux and macOS across supported Python versions.
 
 Detailed host notes: [Codex](codex/README.md) and
 [Claude Code](claude-code/README.md). Release history is in
-[CHANGELOG.md](CHANGELOG.md).
+[CHANGELOG.md](CHANGELOG.md). The accepted 0.4.0 lifecycle contract is
+[ADR 0001](docs/adr/0001-v4-native-workflow.md).
 
 ## Attribution
 
