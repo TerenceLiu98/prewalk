@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Static native-contract checks that do not require either host CLI."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import re
+import sys
+
+
+class ContractError(ValueError):
+    pass
+
+
+def parse_frontmatter(path: Path) -> dict[str, str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ContractError(f"{path}: missing opening frontmatter delimiter")
+    try:
+        end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+    except StopIteration as exc:
+        raise ContractError(f"{path}: missing closing frontmatter delimiter") from exc
+
+    metadata: dict[str, str] = {}
+    for line_number, raw in enumerate(lines[1:end], 2):
+        if not raw.strip():
+            continue
+        if raw[:1].isspace() or ":" not in raw:
+            raise ContractError(f"{path}:{line_number}: unsupported frontmatter syntax")
+        key, value = raw.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if not key or not value or key in metadata:
+            raise ContractError(f"{path}:{line_number}: invalid or duplicate metadata field")
+        if value.startswith('"'):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ContractError(f"{path}:{line_number}: invalid quoted YAML scalar") from exc
+        elif value.startswith("'"):
+            if len(value) < 2 or not value.endswith("'"):
+                raise ContractError(f"{path}:{line_number}: invalid quoted YAML scalar")
+            value = value[1:-1].replace("''", "'")
+        elif ": " in value:
+            raise ContractError(
+                f"{path}:{line_number}: quote plain scalars containing a colon and space"
+            )
+        metadata[key] = value
+    for required in ("name", "description"):
+        if not metadata.get(required, "").strip():
+            raise ContractError(f"{path}: missing non-empty {required}")
+    return metadata
+
+
+def validate_repo(root: Path) -> None:
+    skills = sorted((root / "claude-code" / "skills").glob("*/SKILL.md"))
+    agents = sorted((root / "claude-code" / "agents").glob("*.md"))
+    skill_names = {parse_frontmatter(path)["name"] for path in skills}
+    agent_names = {parse_frontmatter(path)["name"] for path in agents}
+    expected_skills = {
+        "prewalk", "pw-doctor", "pw-go", "pw-off", "pw-resume", "pw-revise", "pw-status"
+    }
+    if skill_names != expected_skills:
+        raise ContractError(f"Claude skill inventory mismatch: {sorted(skill_names)}")
+    if agent_names != {"prewalk-executor"}:
+        raise ContractError(f"Claude agent inventory mismatch: {sorted(agent_names)}")
+
+    claude_manifest = json.loads(
+        (root / "claude-code" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    codex_manifest = json.loads(
+        (root / "codex" / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    claude_marketplace = json.loads(
+        (root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    codex_marketplace = json.loads(
+        (root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    versions = {
+        claude_manifest["version"],
+        codex_manifest["version"],
+        claude_marketplace["plugins"][0]["version"],
+    }
+    codex_marketplace_version = codex_marketplace["plugins"][0].get("version")
+    if codex_marketplace_version:
+        versions.add(codex_marketplace_version)
+    if len(versions) != 1:
+        raise ContractError(f"plugin and marketplace versions disagree: {sorted(versions)}")
+
+    short_command = re.compile(
+        r"(?m)(?:^|`)(/(?:prewalk(?!:)|pw-(?:go|status|revise|off|doctor|resume))\b)"
+    )
+    for path in [root / "claude-code" / "README.md", *skills]:
+        match = short_command.search(path.read_text(encoding="utf-8"))
+        if match:
+            raise ContractError(f"{path}: unsupported unnamespaced command {match.group(1)}")
+
+    hooks = json.loads((root / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    for event in ("SubagentStart", "SubagentStop"):
+        matchers = [group.get("matcher") for group in hooks.get(event, [])]
+        if matchers != ["^prewalk:prewalk-executor$"]:
+            raise ContractError(f"{event} must bind only the scoped executor: {matchers}")
+
+    obsolete_spawn_field = "fork_" + "context"
+    runtime_roots = [root / "codex", root / "tests"]
+    for base in runtime_roots:
+        for path in base.rglob("*"):
+            if path.is_file() and "__pycache__" not in path.parts:
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if obsolete_spawn_field in text:
+                    raise ContractError(f"{path}: obsolete Codex spawn field")
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    try:
+        validate_repo(root)
+    except (ContractError, json.JSONDecodeError) as exc:
+        print(f"contract check failed: {exc}", file=sys.stderr)
+        return 1
+    print("static native contract checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

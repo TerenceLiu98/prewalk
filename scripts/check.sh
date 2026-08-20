@@ -9,6 +9,8 @@ cmp _shared/prewalk_core.py claude-code/hooks/_shared/prewalk_core.py
 
 python3 -m compileall -q _shared codex/hooks claude-code/hooks tests
 python3 -m unittest discover -s tests -v
+python3 scripts/check_contracts.py
+./scripts/check_native_clis.sh
 
 python3 - <<'PY'
 import json
@@ -59,6 +61,8 @@ assert [group["matcher"] for group in hooks["PostToolUse"]] == [
     "Task|Agent",
 ]
 assert [group["matcher"] for group in hooks["PreToolUse"]] == ["Task|Agent"]
+assert [group["matcher"] for group in hooks["SubagentStart"]] == ["^prewalk:prewalk-executor$"]
+assert [group["matcher"] for group in hooks["SubagentStop"]] == ["^prewalk:prewalk-executor$"]
 assert [group["matcher"] for group in hooks["PostToolUseFailure"]] == ["Task|Agent"]
 assert [group["matcher"] for group in hooks["PermissionDenied"]] == ["Task|Agent"]
 
