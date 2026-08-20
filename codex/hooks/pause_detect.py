@@ -25,6 +25,16 @@ def main() -> int:
     todos = _common.normalize_todos(payload)
     if not sid:
         return 0
+    reason = str(payload.get("reason") or payload.get("stop_reason") or payload.get("stopReason") or "")
+    interrupted = core.interrupt_v4_executor(
+        store,
+        sid,
+        reason=reason,
+        event_id=str(payload.get("event_id") or payload.get("eventId") or ""),
+    )
+    if interrupted.handled:
+        _common.emit(core.HookAction(system_message=interrupted.message), event="Stop")
+        return 0
     packet = str(
         payload.get("last_assistant_message")
         or payload.get("lastAssistantMessage")
@@ -35,7 +45,29 @@ def main() -> int:
         store, sid, packet=packet, todos=todos or None, event_id=event_id
     )
     if result.message:
-        _common.emit(core.HookAction(system_message=result.message), event="Stop")
+        if (
+            result.status == "checkpoint_ready"
+            and result.state is not None
+            and result.state.fast_mode
+        ):
+            core.apply_v4_transition(
+                store,
+                sid,
+                expected_phases=[core.V4_CHECKPOINT_READY],
+                target_phase=core.V4_CHECKPOINT_READY,
+                event_id=f"codex-fast-continuation:{event_id or result.state.revision}",
+                updates={"fast_mode": False},
+            )
+            _common.emit(core.HookAction(
+                proceed=False,
+                block_reason=(
+                    "Prewalk fast checkpoint is durable. Inspect the live spawn_agent schema, "
+                    "then run $prewalk:pw-go and execute its exact token-bound route now."
+                ),
+                system_message=result.message,
+            ), event="Stop")
+        else:
+            _common.emit(core.HookAction(system_message=result.message), event="Stop")
     return 0
 
 

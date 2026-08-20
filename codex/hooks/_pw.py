@@ -4,8 +4,7 @@
 Usage:
   _pw.py go      <session_id>
   _pw.py revise  <session_id> [revision text...]
-  _pw.py confirm <session_id>
-  _pw.py fail    <session_id> [reason...]
+  _pw.py resume  <session_id>
   _pw.py complete|incomplete <session_id> [detail...]
 
 Prints the handoff note or revision instructions (or a no-active-checkpoint
@@ -38,8 +37,25 @@ def main() -> int:
     store = _common.store_file()
 
     if sub == "go":
-        result = core.v4_handoff_context(store, session_id)
-        print(result.message or "There is no active prewalk checkpoint in this session.")
+        fields: set[str] = set()
+        for argument in sys.argv[3:]:
+            if argument.startswith("--schema-fields="):
+                fields.update(
+                    item.strip() for item in argument.partition("=")[2].split(",") if item.strip()
+                )
+        result = core.request_codex_handoff(store, session_id, schema_fields=fields)
+        if result.state is not None and result.status == "handoff_requested":
+            state = result.state
+            print(f"PREWALK_TASK_NAME: {state.route_task_name}")
+            print(f"PREWALK_EXECUTOR_MODEL: {state.executor_model}")
+            if state.effort_routing_proven:
+                print(f"PREWALK_EXECUTOR_EFFORT: {state.executor_effort}")
+            print("PREWALK_FORK_TURNS: none")
+            print("PREWALK_MESSAGE_BEGIN")
+            print(result.message)
+            print("PREWALK_MESSAGE_END")
+        else:
+            print(result.message or "There is no active prewalk checkpoint in this session.")
         return 0
 
     if sub == "revise":
@@ -48,24 +64,19 @@ def main() -> int:
         print(result.message or "There is no active prewalk checkpoint to revise.")
         return 0
 
-    if sub in ("confirm", "resume"):
-        action = core.on_handoff_confirm(store, session_id)
-        print(action.additional_context or action.system_message)
-        return 0
-
-    if sub == "fail":
-        action = core.on_handoff_failed(store, session_id, " ".join(sys.argv[3:]))
-        print(action.additional_context or action.system_message)
+    if sub == "resume":
+        result = core.resume_codex_manual(store, session_id)
+        print(result.message)
         return 0
 
     if sub in ("complete", "incomplete"):
-        action = core.on_executor_result(
+        result = core.finish_codex_manual(
             store,
             session_id,
             complete=sub == "complete",
             detail=" ".join(sys.argv[3:]),
         )
-        print(action.additional_context or action.system_message)
+        print(result.message)
         return 0
 
     print("unknown subcommand: " + sub, file=sys.stderr)

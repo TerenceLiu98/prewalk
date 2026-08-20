@@ -32,20 +32,22 @@ requests the same validated handoff at the Stop checkpoint.
 
 ## Capability-safe route
 
-Codex hooks cannot rewrite a native subagent request. After `pw-go`, the skill
-inspects the runtime `spawn_agent` schema:
+Codex hooks validate the native subagent request without rewriting it. `pw-go`
+inspects the live `spawn_agent` schema before creating a one-time route:
 
 ```text
 durable Stop checkpoint -> handoff_requested
   -> schema has model + fork_turns controls
-     -> spawn once with fork_turns="none" -> confirm -> executor
+     -> token-bound PreToolUse validation
+     -> spawn once with fork_turns="none"
+     -> PostToolUse binds returned agent_id -> executor_running
   -> required model control is absent
-     -> mark spawn attempt failed -> restore paused
-     -> /model <executor> -> pw-resume
+     -> retain checkpoint without spawning
 ```
 
 Presets with `require_model_routing=true` never silently spawn on an unknown
-model. A spawn failure remains retryable. Executors report
+model. A spawn failure remains retryable. Only the bound agent's SubagentStop
+can finish the run. Executors report
 `PREWALK_COMPLETE` or `PREWALK_INCOMPLETE: <reason>`; incomplete work restores
 the checkpoint.
 
@@ -54,9 +56,11 @@ the checkpoint.
 `hooks.json` registers:
 
 - `PostToolUse` plan/todo tools: track the current snapshot.
-- `PostToolUse` direct edit, shell, and RepoPrompt tools: observe a real first
-  mutation while rejecting quoted/commented `apply_patch`, failures, and no-op.
-- `Stop`: validate the checkpoint, trigger `--fast`, and clean trivial runs.
+- `PreToolUse`/`PostToolUse` `spawn_agent`: validate the exact route and bind
+  the returned agent identity.
+- `SubagentStop`: accept a final marker only from the bound executor.
+- Root `Stop`: capture the exact checkpoint, trigger `--fast`, and recover an
+  explicitly interrupted bound route.
 
 Skills call `_arm.py` and `_pw.py`; hook entry points use shell wrappers because
 Codex runs plugin hooks with the plugin root as the working directory.

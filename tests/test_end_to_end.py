@@ -97,99 +97,145 @@ class EndToEndFlowTests(unittest.TestCase):
             "tool_response": {"success": True},
         }
 
-    @unittest.skip("v4 Codex routing is implemented and re-enabled by issue #13")
-    def test_codex_scripts_complete_a_full_handoff(self) -> None:
-        session_id = "codex-e2e"
-        armed = self.run_script("codex", "_arm.py", "arm", session_id, "Build the feature")
-        self.assertIn("prewalk ARMED", armed.stdout)
-        self.assertIn("planner : active root session", armed.stdout)
-        self.assertIn("configured: executor=gpt-5.6-terra", armed.stdout)
-        self.assertIn("proven    : model=unproven", armed.stdout)
-        self.assertNotIn("Switch this session", armed.stdout)
-
-        todos = self.todo_payload(session_id, "codex")
-        self.run_script("codex", "todo_tracker.py", payload=todos)
-        self.run_script("codex", "edit_tracker.py", payload={
-            "session_id": session_id,
-            "tool_response": {"ok": True, "executed": True},
-        })
-        checkpoint = dict(todos, hook_event_name="Stop")
-        paused = self.run_script("codex", "pause_detect.py", payload=checkpoint)
-        self.assertIn("PAUSE", paused.stdout)
-
-        handoff = self.run_script("codex", "_pw.py", "go", session_id)
-        self.assertIn("spawn_agent", handoff.stdout)
-        self.assertIn('task_name="prewalk_executor_1"', handoff.stdout)
-        self.assertIn('fork_turns="none"', handoff.stdout)
-        self.assertIn('model="gpt-5.6-terra"', handoff.stdout)
-        pending = self.run_script("codex", "_arm.py", "status", session_id)
-        self.assertIn("handoff_requested", pending.stdout)
-
-        confirmed = self.run_script("codex", "_pw.py", "confirm", session_id)
-        self.assertIn("confirmed", confirmed.stdout)
-
+    def arm_codex_checkpoint(self, session_id: str, *, extra_env=None) -> None:
         self.run_script(
-            "codex",
-            "todo_tracker.py",
-            payload=self.todo_payload(session_id, "codex", completed=True),
-        )
-        status = self.run_script("codex", "_arm.py", "status", session_id)
-        self.assertIn("idle", status.stdout)
-
-    @unittest.skip("v4 Codex routing is implemented and re-enabled by issue #13")
-    def test_codex_failed_handoff_is_retryable(self) -> None:
-        session_id = "codex-retry"
-        self.run_script("codex", "_arm.py", "arm", session_id, "Build the feature")
-        todos = self.todo_payload(session_id, "codex")
-        self.run_script("codex", "todo_tracker.py", payload=todos)
-        self.run_script("codex", "edit_tracker.py", payload={
-            "session_id": session_id,
-            "tool_response": {"ok": True},
-        })
-        self.run_script("codex", "pause_detect.py", payload=dict(todos, hook_event_name="Stop"))
-        self.run_script("codex", "_pw.py", "go", session_id)
-
-        failed = self.run_script(
-            "codex", "_pw.py", "fail", session_id, "spawn schema has no model"
-        )
-        self.assertIn("retryable", failed.stdout)
-        status = self.run_script("codex", "_arm.py", "status", session_id)
-        self.assertIn("paused", status.stdout)
-        self.assertIn("spawn schema has no model", status.stdout)
-
-    @unittest.skip("v4 Codex routing is implemented and re-enabled by issue #13")
-    def test_codex_interleaved_threads_remain_isolated(self) -> None:
-        sessions = ("thread-a", "thread-b")
-        for session_id in sessions:
-            env = {"CODEX_THREAD_ID": session_id, "CODEX_SESSION_ID": None}
-            self.run_script(
-                "codex", "_arm.py", "arm", session_id, "Build the feature", extra_env=env
-            )
-            todos = self.todo_payload(session_id, "codex")
-            self.run_script("codex", "todo_tracker.py", payload=todos, extra_env=env)
-            self.run_script("codex", "edit_tracker.py", payload={
-                "session_id": session_id,
-                "tool_response": {"ok": True},
-            }, extra_env=env)
-            self.run_script(
-                "codex", "pause_detect.py",
-                payload=dict(todos, hook_event_name="Stop"), extra_env=env,
-            )
-            self.run_script("codex", "_pw.py", "go", session_id, extra_env=env)
-
-        self.run_script(
-            "codex", "_pw.py", "fail", "thread-a", "route rejected",
-            extra_env={"CODEX_THREAD_ID": "thread-a"},
-        )
-        self.run_script(
-            "codex", "_pw.py", "confirm", "thread-b",
-            extra_env={"CODEX_THREAD_ID": "thread-b"},
+            "codex", "_arm.py", "arm", session_id, "Build the feature", extra_env=extra_env
         )
         self.run_script(
             "codex", "todo_tracker.py",
-            payload=self.todo_payload("thread-b", "codex", completed=True),
-            extra_env={"CODEX_THREAD_ID": "thread-b"},
+            payload=self.todo_payload(session_id, "codex"), extra_env=extra_env,
         )
+        self.run_script("codex", "pause_detect.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "Stop",
+            "last_assistant_message": PACKET,
+        }, extra_env=extra_env)
+
+    def request_codex_route(self, session_id: str, *, extra_env=None) -> dict:
+        handoff = self.run_script(
+            "codex", "_pw.py", "go", session_id,
+            "--schema-fields=task_name,message,fork_turns,model,reasoning_effort",
+            extra_env=extra_env,
+        )
+        fields = dict(re.findall(r"^PREWALK_([A-Z_]+): (.+)$", handoff.stdout, re.M))
+        message = re.search(
+            r"PREWALK_MESSAGE_BEGIN\n(.*)\nPREWALK_MESSAGE_END", handoff.stdout, re.S
+        )
+        self.assertIsNotNone(message)
+        tool_input = {
+            "task_name": fields["TASK_NAME"],
+            "message": message.group(1),
+            "fork_turns": fields["FORK_TURNS"],
+            "model": fields["EXECUTOR_MODEL"],
+        }
+        if "EXECUTOR_EFFORT" in fields:
+            tool_input["reasoning_effort"] = fields["EXECUTOR_EFFORT"]
+        return tool_input
+
+    def test_codex_scripts_complete_a_full_handoff(self) -> None:
+        session_id = "codex-e2e"
+        self.arm_codex_checkpoint(session_id)
+        tool_input = self.request_codex_route(session_id)
+        self.assertEqual(tool_input["fork_turns"], "none")
+        self.assertEqual(tool_input["model"], "gpt-5.6-terra")
+        self.assertIn(PACKET, tool_input["message"])
+
+        accepted = self.run_script("codex", "executor_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_use_id": "spawn-1",
+            "tool_input": tool_input,
+        })
+        self.assertEqual(accepted.stdout, "")
+        self.run_script("codex", "executor_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "spawn_agent",
+            "tool_use_id": "spawn-1",
+            "tool_response": {"agent_id": "agent-1", "success": True},
+        })
+        self.run_script("codex", "executor_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "SubagentStop",
+            "agent_id": "agent-unrelated",
+            "last_assistant_message": "PREWALK_COMPLETE",
+        })
+        running = self.run_script("codex", "_arm.py", "status", session_id)
+        self.assertIn("executor_running", running.stdout)
+        self.run_script("codex", "executor_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "SubagentStop",
+            "agent_id": "agent-1",
+            "last_assistant_message": "Done\nPREWALK_COMPLETE",
+        })
+        status = self.run_script("codex", "_arm.py", "status", session_id)
+        self.assertIn("idle", status.stdout)
+
+    def test_codex_failed_handoff_is_retryable(self) -> None:
+        session_id = "codex-retry"
+        self.arm_codex_checkpoint(session_id)
+        tool_input = self.request_codex_route(session_id)
+        tool_input["fork_turns"] = "all"
+        denied = self.run_script("codex", "executor_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_use_id": "spawn-bad",
+            "tool_input": tool_input,
+        })
+        output = json.loads(denied.stdout)
+        self.assertEqual(
+            output["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn("fork_turns", output["hookSpecificOutput"]["permissionDecisionReason"])
+        status = self.run_script("codex", "_arm.py", "status", session_id)
+        self.assertIn("incomplete", status.stdout)
+
+    def test_codex_fast_mode_requests_the_same_native_route_once(self) -> None:
+        session_id = "codex-fast"
+        self.run_script(
+            "codex", "_arm.py", "arm", session_id, "--fast", "Build the feature"
+        )
+        self.run_script(
+            "codex", "todo_tracker.py", payload=self.todo_payload(session_id, "codex")
+        )
+        payload = {
+            "session_id": session_id,
+            "hook_event_name": "Stop",
+            "event_id": "stop-fast",
+            "last_assistant_message": PACKET,
+        }
+        first = self.run_script("codex", "pause_detect.py", payload=payload)
+        output = json.loads(first.stdout)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("spawn_agent schema", output["reason"])
+        second = self.run_script("codex", "pause_detect.py", payload=payload)
+        output = json.loads(second.stdout)
+        self.assertNotIn("decision", output)
+
+    def test_codex_interleaved_threads_remain_isolated(self) -> None:
+        sessions = ("thread-a", "thread-b")
+        routes = {}
+        for session_id in sessions:
+            env = {"CODEX_THREAD_ID": session_id, "CODEX_SESSION_ID": None}
+            self.arm_codex_checkpoint(session_id, extra_env=env)
+            routes[session_id] = self.request_codex_route(session_id, extra_env=env)
+            self.run_script("codex", "executor_router.py", payload={
+                "session_id": session_id,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "spawn_agent",
+                "tool_use_id": f"spawn-{session_id}",
+                "tool_input": routes[session_id],
+            }, extra_env=env)
+        wrong = self.run_script("codex", "executor_router.py", payload={
+            "session_id": "thread-a",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "spawn_agent",
+            "tool_use_id": "spawn-thread-b",
+            "tool_response": {"agent_id": "agent-b", "success": True},
+        }, extra_env={"CODEX_THREAD_ID": "thread-a"})
+        self.assertEqual(wrong.stdout, "")
         status_a = self.run_script(
             "codex", "_arm.py", "status", "thread-a",
             extra_env={"CODEX_THREAD_ID": "thread-a"},
@@ -198,9 +244,8 @@ class EndToEndFlowTests(unittest.TestCase):
             "codex", "_arm.py", "status", "thread-b",
             extra_env={"CODEX_THREAD_ID": "thread-b"},
         )
-        self.assertIn("paused", status_a.stdout)
-        self.assertIn("route rejected", status_a.stdout)
-        self.assertIn("idle", status_b.stdout)
+        self.assertIn("handoff_requested", status_a.stdout)
+        self.assertIn("handoff_requested", status_b.stdout)
 
         mismatch = self.run_script(
             "codex", "_arm.py", "status", "thread-b",
@@ -208,7 +253,7 @@ class EndToEndFlowTests(unittest.TestCase):
         )
         self.assertIn("conflicts", mismatch.stderr)
         self.assertIn(
-            "paused",
+            "handoff_requested",
             self.run_script(
                 "codex", "_arm.py", "status", "thread-a",
                 extra_env={"CODEX_THREAD_ID": "thread-a"},
@@ -249,7 +294,10 @@ class EndToEndFlowTests(unittest.TestCase):
         self.assertIn("checkpoint ready", stopped.stdout)
         status = self.run_script("codex", "_arm.py", "status", session_id)
         self.assertIn("checkpoint_ready", status.stdout)
-        handoff = self.run_script("codex", "_pw.py", "go", session_id)
+        handoff = self.run_script(
+            "codex", "_pw.py", "go", session_id,
+            "--schema-fields=task_name,message,fork_turns,model,reasoning_effort",
+        )
         self.assertIn(PACKET, handoff.stdout)
 
         store = Path(self.temp_dir.name) / "codex" / "prewalk-state.json"

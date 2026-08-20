@@ -74,6 +74,12 @@ for skill in (tmp / "claude" / "skills").glob("*/SKILL.md"):
 
 assert (tmp / "claude" / "prewalk-presets.json").is_file()
 assert (tmp / "codex" / "prewalk-presets.toml").is_file()
+
+codex_hooks = json.loads((root / "codex" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+spawn_matcher = r"^((functions|collaboration)\.)?spawn_agent$"
+assert [group["matcher"] for group in codex_hooks["PreToolUse"]] == [spawn_matcher]
+assert spawn_matcher in [group["matcher"] for group in codex_hooks["PostToolUse"]]
+assert len(codex_hooks["SubagentStop"]) == 1
 PY
 
 git diff --check

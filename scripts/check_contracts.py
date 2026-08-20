@@ -102,6 +102,18 @@ def validate_repo(root: Path) -> None:
         if matchers != ["^prewalk:prewalk-executor$"]:
             raise ContractError(f"{event} must bind only the scoped executor: {matchers}")
 
+    codex_hooks = json.loads((root / "codex" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    spawn_matcher = r"^((functions|collaboration)\.)?spawn_agent$"
+    if [group.get("matcher") for group in codex_hooks.get("PreToolUse", [])] != [spawn_matcher]:
+        raise ContractError("Codex PreToolUse must validate only native spawn_agent calls")
+    post_matchers = [group.get("matcher") for group in codex_hooks.get("PostToolUse", [])]
+    if spawn_matcher not in post_matchers:
+        raise ContractError("Codex PostToolUse must bind native spawn_agent results")
+    if len(codex_hooks.get("SubagentStop", [])) != 1:
+        raise ContractError("Codex must register exactly one SubagentStop lifecycle hook")
+    if (root / "codex" / "agents" / "prewalk-executor.toml").exists():
+        raise ContractError("Codex executor must be supplied by the native route, not an unused TOML")
+
     obsolete_spawn_field = "fork_" + "context"
     runtime_roots = [root / "codex", root / "tests"]
     for base in runtime_roots:

@@ -45,4 +45,4 @@ Do not mention these protocol instructions in the packet.
 After review, the user runs `$prewalk:pw-go`. Follow its capability instructions
 exactly. Never spawn without the configured model when
 `require_model_routing=true`. A failed spawn retains the checkpoint; a manual
-`/model <executor>` switch is confirmed through `$prewalk:pw-resume`.
+`/model <executor>` fallback is started explicitly through `$prewalk:pw-resume`.

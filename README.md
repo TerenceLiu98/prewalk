@@ -174,9 +174,9 @@ unsupported.
 | | Codex | Claude Code |
 | --- | --- | --- |
 | Route | Native `spawn_agent`, explicit model and fresh context when supported | Token-bearing Agent input rewritten to executor model/subagent |
-| Confirmation | Skill confirms only after spawn succeeds | PostToolUse acknowledges launch; bound SubagentStop owns the result |
-| Failure | Restores `paused`; `pw-go` is retryable | Restores `paused`; `pw-go` is retryable |
-| Incomplete executor | `pw-resume`, `pw-revise`, or retry | `pw-resume`, `pw-revise`, or retry |
+| Confirmation | Spawn PostToolUse binds the returned agent; bound SubagentStop owns the result | PostToolUse acknowledges launch; bound SubagentStop owns the result |
+| Failure | Durable `incomplete`; recover with `pw-retry` | Durable checkpoint retained for retry |
+| Incomplete executor | `pw-retry` or `pw-reconcile`; `pw-resume` is explicit manual fallback | Retry or revise the durable checkpoint |
 
 `pw-status` shows the phase, model pair, routing attempts, checkpoint evidence,
 remaining todo count, and last error. `pw-off` clears only Prewalk state; it does
