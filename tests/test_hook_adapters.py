@@ -77,6 +77,28 @@ class HookAdapterTests(unittest.TestCase):
         self.assertEqual(todos[0].content, "Patch adapter and test it")
         self.assertEqual(todos[0].status, "in_progress")
 
+    def test_claude_regular_hooks_ignore_subagent_payloads(self) -> None:
+        payload = {
+            "session_id": "root-session",
+            "agent_id": "nested-agent",
+            "agent_type": "prewalk:prewalk-executor",
+        }
+        self.assertEqual(self.claude.session_id(payload), "")
+        self.assertEqual(
+            self.claude.session_id(payload, allow_subagent=True),
+            "root-session",
+        )
+
+    def test_claude_runtime_commands_are_namespaced(self) -> None:
+        rendered = self.claude.claude_commands(
+            "Run `/pw-go`, `/pw-revise <changes>`, or `/prewalk` again."
+        )
+        self.assertEqual(
+            rendered,
+            "Run `/prewalk:pw-go`, `/prewalk:pw-revise <changes>`, or "
+            "`/prewalk:prewalk` again.",
+        )
+
     def test_nested_task_list_response_and_camel_case_envelope(self) -> None:
         payload = {
             "sessionId": "session",

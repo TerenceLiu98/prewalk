@@ -15,11 +15,13 @@ If there is no active checkpoint, report that and stop. If a handoff is already
 pending, do not spawn another Task.
 
 For a new handoff request, spawn exactly one `Task`/`Agent` using the complete
-structured Handoff Packet as its prompt. The PreToolUse hook rewrites that Task
-to the configured `prewalk-executor` and executor model. Do not edit remaining
-work in the main session and do not report success before the Task returns.
+structured Handoff Packet and the exact `PREWALK_HANDOFF_TOKEN` line printed by
+the helper as its prompt. The PreToolUse hook rewrites only that call to the
+configured `prewalk:prewalk-executor` and executor model. Do not edit remaining
+work in the main session and do not report success before the executor stops.
 
-The PostToolUse hook owns the result:
+Agent PostToolUse acknowledges launch only. The bound executor's SubagentStop
+event owns the result:
 
 - `PREWALK_COMPLETE` clears the run.
 - `PREWALK_INCOMPLETE: <reason>` restores the checkpoint for revision or retry.

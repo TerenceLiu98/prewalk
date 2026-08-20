@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,13 @@ class EndToEndFlowTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
+
+    @staticmethod
+    def handoff_token(output: str) -> str:
+        match = re.search(r"PREWALK_HANDOFF_TOKEN: ([A-Za-z0-9_-]+)", output)
+        if not match:
+            raise AssertionError("handoff output did not contain a token")
+        return match.group(1)
 
     @staticmethod
     def todo_payload(session_id: str, host: str, *, completed: bool = False) -> dict:
@@ -131,10 +139,16 @@ class EndToEndFlowTests(unittest.TestCase):
         })
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         self.assertIn("spawn ONE Task", handoff.stdout)
+        token = self.handoff_token(handoff.stdout)
 
         routed = self.run_script("claude-code", "handoff_router.py", payload={
             "session_id": session_id,
-            "tool_input": {"prompt": "Finish the remaining plan", "subagent_type": "general-purpose"},
+            "hook_event_name": "PreToolUse",
+            "tool_use_id": "tool-prewalk",
+            "tool_input": {
+                "prompt": f"Finish the remaining plan\nPREWALK_HANDOFF_TOKEN: {token}",
+                "subagent_type": "general-purpose",
+            },
         })
         output = json.loads(routed.stdout)
         updated = output["hookSpecificOutput"]["updatedInput"]
@@ -146,7 +160,56 @@ class EndToEndFlowTests(unittest.TestCase):
 
         self.run_script("claude-code", "handoff_result.py", payload={
             "session_id": session_id,
-            "tool_response": {"success": True, "content": "Done\nPREWALK_COMPLETE"},
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": "tool-prewalk",
+            "tool_response": {"success": True, "content": "background agent launched"},
+        })
+        acknowledged = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("handoff_requested", acknowledged.stdout)
+        self.assertIn("launch_ack: yes", acknowledged.stdout)
+
+        self.run_script("claude-code", "handoff_lifecycle.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-prewalk",
+            "agent_type": "prewalk:prewalk-executor",
+        })
+        running = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("executor", running.stdout)
+        self.assertIn("executor_agent: agent-prewalk", running.stdout)
+
+        # Global plugin hooks also fire in subagents. Their todo updates must
+        # not finish the root run before the bound SubagentStop marker arrives.
+        executor_todos = self.todo_payload(session_id, "claude-code", completed=True)
+        executor_todos.update({
+            "agent_id": "agent-prewalk",
+            "agent_type": "prewalk:prewalk-executor",
+        })
+        self.run_script("claude-code", "todo_tracker.py", payload=executor_todos)
+        self.assertIn(
+            "executor",
+            self.run_script("claude-code", "_arm.py", "status", session_id).stdout,
+        )
+
+        # A different executor-shaped event cannot clear the bound run.
+        self.run_script("claude-code", "handoff_lifecycle.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "SubagentStop",
+            "agent_id": "agent-unrelated",
+            "agent_type": "prewalk:prewalk-executor",
+            "last_assistant_message": "PREWALK_COMPLETE",
+        })
+        self.assertIn(
+            "executor",
+            self.run_script("claude-code", "_arm.py", "status", session_id).stdout,
+        )
+
+        self.run_script("claude-code", "handoff_lifecycle.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "SubagentStop",
+            "agent_id": "agent-prewalk",
+            "agent_type": "prewalk:prewalk-executor",
+            "last_assistant_message": "Done\nPREWALK_COMPLETE",
         })
         status = self.run_script("claude-code", "_arm.py", "status", session_id)
         self.assertIn("idle", status.stdout)
@@ -158,19 +221,160 @@ class EndToEndFlowTests(unittest.TestCase):
             "claude-code", "todo_tracker.py",
             payload=self.todo_payload(session_id, "claude-code"),
         )
-        self.run_script("claude-code", "_pw.py", "go", session_id)
+        handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
+        token = self.handoff_token(handoff.stdout)
         self.run_script("claude-code", "handoff_router.py", payload={
             "session_id": session_id,
-            "tool_input": {"prompt": "Finish the remaining plan"},
+            "hook_event_name": "PreToolUse",
+            "tool_use_id": "tool-failed",
+            "tool_input": {
+                "prompt": f"Finish the remaining plan\nPREWALK_HANDOFF_TOKEN: {token}"
+            },
         })
         self.run_script("claude-code", "handoff_result.py", payload={
             "session_id": session_id,
             "hook_event_name": "PostToolUseFailure",
+            "tool_use_id": "tool-failed",
             "error": "model unavailable",
         })
         status = self.run_script("claude-code", "_arm.py", "status", session_id)
         self.assertIn("paused", status.stdout)
         self.assertIn("model unavailable", status.stdout)
+
+    def test_claude_missing_marker_and_duplicate_lifecycle_are_retryable(self) -> None:
+        session_id = "claude-missing-marker"
+        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"),
+        )
+        handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
+        token = self.handoff_token(handoff.stdout)
+        self.run_script("claude-code", "handoff_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_use_id": "tool-missing",
+            "tool_input": {"prompt": f"packet\nPREWALK_HANDOFF_TOKEN: {token}"},
+        })
+        start = {
+            "session_id": session_id,
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-missing",
+            "agent_type": "prewalk:prewalk-executor",
+        }
+        self.run_script("claude-code", "handoff_lifecycle.py", payload=start)
+        self.run_script("claude-code", "handoff_lifecycle.py", payload=start)
+        self.run_script("claude-code", "handoff_lifecycle.py", payload={
+            **start,
+            "hook_event_name": "SubagentStop",
+            "last_assistant_message": "Finished but omitted the marker",
+        })
+        status = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("paused", status.stdout)
+        self.assertIn("without a PREWALK completion marker", status.stdout)
+
+    def test_claude_unrelated_agent_events_leave_pending_handoff_unchanged(self) -> None:
+        session_id = "claude-unrelated"
+        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"),
+        )
+        handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
+        token = self.handoff_token(handoff.stdout)
+        unrelated = self.run_script("claude-code", "handoff_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_use_id": "tool-unrelated",
+            "tool_input": {"prompt": "unrelated Agent request"},
+        })
+        self.assertEqual(unrelated.stdout, "")
+        self.run_script("claude-code", "handoff_result.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": "tool-unrelated",
+            "tool_response": {"success": True, "content": "PREWALK_COMPLETE"},
+        })
+        status = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("handoff_requested", status.stdout)
+        self.assertIn("routed: no", status.stdout)
+
+        nested = self.run_script("claude-code", "handoff_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_use_id": "tool-nested",
+            "agent_id": "parent-agent",
+            "tool_input": {"prompt": f"packet\nPREWALK_HANDOFF_TOKEN: {token}"},
+        })
+        self.assertEqual(nested.stdout, "")
+        self.assertIn(
+            "routed: no",
+            self.run_script("claude-code", "_arm.py", "status", session_id).stdout,
+        )
+
+    def test_claude_foreground_lifecycle_completes_before_agent_posttooluse(self) -> None:
+        session_id = "claude-foreground"
+        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"),
+        )
+        handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
+        token = self.handoff_token(handoff.stdout)
+        self.run_script("claude-code", "handoff_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_use_id": "tool-foreground",
+            "tool_input": {"prompt": f"packet\nPREWALK_HANDOFF_TOKEN: {token}"},
+        })
+        lifecycle = {
+            "session_id": session_id,
+            "agent_id": "agent-foreground",
+            "agent_type": "prewalk:prewalk-executor",
+        }
+        self.run_script(
+            "claude-code", "handoff_lifecycle.py",
+            payload={**lifecycle, "hook_event_name": "SubagentStart"},
+        )
+        self.run_script(
+            "claude-code", "handoff_lifecycle.py",
+            payload={
+                **lifecycle,
+                "hook_event_name": "SubagentStop",
+                "last_assistant_message": "PREWALK_COMPLETE",
+            },
+        )
+        # Foreground Agent PostToolUse arrives after SubagentStop and is harmless.
+        self.run_script("claude-code", "handoff_result.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": "tool-foreground",
+            "tool_response": {"success": True},
+        })
+        self.assertIn(
+            "idle",
+            self.run_script("claude-code", "_arm.py", "status", session_id).stdout,
+        )
+
+    def test_claude_token_call_without_tool_identity_is_denied_and_retryable(self) -> None:
+        session_id = "claude-no-tool-id"
+        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"),
+        )
+        handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
+        token = self.handoff_token(handoff.stdout)
+        denied = self.run_script("claude-code", "handoff_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_input": {"prompt": f"packet\nPREWALK_HANDOFF_TOKEN: {token}"},
+        })
+        output = json.loads(denied.stdout)
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        status = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("paused", status.stdout)
+        self.assertIn("tool_use_id", status.stdout)
 
     def test_claude_fast_mode_requests_handoff_from_stop_hook(self) -> None:
         session_id = "claude-fast"

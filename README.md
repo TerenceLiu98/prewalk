@@ -50,8 +50,8 @@ Restart Claude Code, then run:
 /prewalk:pw-go
 ```
 
-Claude rewrites one Task to the configured executor in `PreToolUse`, but does
-not confirm the handoff until the Task result returns successfully.
+Claude rewrites only the token-bearing Agent call, binds its lifecycle identity,
+and accepts a completion marker only from that executor's `SubagentStop` event.
 
 ## Commands
 
@@ -157,8 +157,8 @@ runtime spawn schema must be inspected at handoff time.
 
 | | Codex | Claude Code |
 | --- | --- | --- |
-| Route | Native `spawn_agent`, explicit model and fresh context when supported | Task input rewritten to executor model/subagent |
-| Confirmation | Skill confirms only after spawn succeeds | PostToolUse confirms only after Task returns |
+| Route | Native `spawn_agent`, explicit model and fresh context when supported | Token-bearing Agent input rewritten to executor model/subagent |
+| Confirmation | Skill confirms only after spawn succeeds | PostToolUse acknowledges launch; bound SubagentStop owns the result |
 | Failure | Restores `paused`; `pw-go` is retryable | Restores `paused`; `pw-go` is retryable |
 | Incomplete executor | `pw-resume`, `pw-revise`, or retry | `pw-resume`, `pw-revise`, or retry |
 

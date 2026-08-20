@@ -58,7 +58,8 @@ def cmd(p): return f'python3 "{os.path.join(hooks, p)}"'
 # the current set. Leave every unrelated user hook untouched.
 managed = {
     "export_session_id.py", "todo_tracker.py", "edit_tracker.py",
-    "handoff_router.py", "handoff_result.py", "pause_detect.py", "edit_gate.py",
+    "handoff_router.py", "handoff_result.py", "handoff_lifecycle.py",
+    "pause_detect.py", "edit_gate.py",
 }
 def owned(group):
     commands = [entry.get("command", "") for entry in group.get("hooks", [])]
@@ -78,6 +79,14 @@ for ev, grp in {
          "hooks":[{"type":"command","command":cmd("edit_tracker.py")} ]},
         {"matcher":"Task|Agent",
          "hooks":[{"type":"command","command":cmd("handoff_result.py")} ]},
+    ],
+    "SubagentStart": [
+        {"matcher":"^prewalk:prewalk-executor$",
+         "hooks":[{"type":"command","command":cmd("handoff_lifecycle.py")} ]},
+    ],
+    "SubagentStop": [
+        {"matcher":"^prewalk:prewalk-executor$",
+         "hooks":[{"type":"command","command":cmd("handoff_lifecycle.py")} ]},
     ],
     "PostToolUseFailure": [
         {"matcher":"Task|Agent",

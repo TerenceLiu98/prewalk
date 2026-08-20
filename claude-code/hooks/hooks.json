@@ -54,6 +54,30 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "matcher": "^prewalk:prewalk-executor$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff_lifecycle.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "^prewalk:prewalk-executor$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff_lifecycle.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUseFailure": [
       {
         "matcher": "Task|Agent",

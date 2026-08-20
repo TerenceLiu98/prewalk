@@ -93,7 +93,7 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
     print(f"  handoff : {preset.handoff_mode} (model routing required={preset.require_model_routing})")
     print()
     print("Switch this session to the planner now by running: /model " + preset.planner_model)
-    print("Then follow the frontier protocol from the /prewalk skill.")
+    print("Then follow the frontier protocol from the /prewalk:prewalk skill.")
     return 0
 
 
@@ -136,10 +136,10 @@ def main() -> int:
     if sub == "arm":
         return cmd_arm(session_id, rest)
     if sub == "status":
-        print(core.describe(store, session_id))
+        print(_common.claude_commands(core.describe(store, session_id)))
         return 0
     if sub == "disarm":
-        print(core.disarm(store, session_id))
+        print(_common.claude_commands(core.disarm(store, session_id)))
         return 0
     if sub == "doctor":
         return cmd_doctor()

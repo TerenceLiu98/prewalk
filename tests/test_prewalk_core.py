@@ -101,6 +101,27 @@ class PrewalkCoreTests(unittest.TestCase):
         self.assertIn("confirmed", confirmed.system_message)
         self.assertEqual(core.load_state(self.store, self.session_id).phase, core.EXECUTOR)
 
+    def test_claude_launch_and_agent_binding_require_exact_ids(self) -> None:
+        self.checkpoint_run()
+        core.on_pw_go(self.store, self.session_id, host="claude")
+        state = core.load_state(self.store, self.session_id)
+        state.handoff_routed = True
+        state.handoff_token = ""
+        state.handoff_tool_use_id = "tool-1"
+        core.save_state(self.store, state)
+
+        self.assertIsNone(core.on_handoff_launch_ack(self.store, self.session_id, "tool-other"))
+        ack = core.on_handoff_launch_ack(self.store, self.session_id, "tool-1")
+        self.assertIsNotNone(ack)
+        self.assertEqual(core.load_state(self.store, self.session_id).phase, core.HANDOFF_REQUESTED)
+
+        started = core.on_executor_started(self.store, self.session_id, "agent-1")
+        self.assertIsNotNone(started)
+        state = core.load_state(self.store, self.session_id)
+        self.assertEqual(state.phase, core.EXECUTOR)
+        self.assertEqual(state.executor_agent_id, "agent-1")
+        self.assertIsNone(core.on_executor_started(self.store, self.session_id, "agent-2"))
+
     def test_failed_handoff_and_incomplete_executor_restore_checkpoint(self) -> None:
         self.checkpoint_run()
         core.on_pw_go(self.store, self.session_id, host="codex")
@@ -138,6 +159,11 @@ class PrewalkCoreTests(unittest.TestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state.phase, core.HANDOFF_REQUESTED)
         self.assertFalse(state.handoff_done)
+        self.assertTrue(state.handoff_token)
+        self.assertIn(
+            "PREWALK_HANDOFF_TOKEN: " + state.handoff_token,
+            action.additional_context,
+        )
 
     def test_fast_mode_requests_handoff_once_at_turn_end(self) -> None:
         state = core.start_run(self.store, self.session_id, self.preset, auto_swap=True)

@@ -12,9 +12,9 @@ forced on.
 Flow:
   - frontier (main session) explores + plans + lands edit #1
   - /pw-go sets phase="handoff_requested"
-  - the frontier's next Task spawn is rewritten here into
+  - the frontier's token-bearing Task spawn is rewritten here into
     { subagent_type: "prewalk-executor", model: <executor>, prompt: <handoff> }
-  - PostToolUse confirms the actual Task result; this hook never claims success.
+  - PostToolUse acknowledges launch; SubagentStart/Stop own executor identity and result.
 
 Never denies: emits permissionDecision "allow" + updatedInput, or exits 0.
 """
@@ -22,24 +22,28 @@ Never denies: emits permissionDecision "allow" + updatedInput, or exits 0.
 from __future__ import annotations
 
 import json
-import os
 import sys
 
 import _bootstrap  # noqa: F401  (locates prewalk_core.py)
 import _common  # type: ignore[import-not-found]
 import prewalk_core as core  # noqa: E402
 
-EXECUTOR_AGENT = "prewalk-executor"
-PLUGIN_PREFIX = "prewalk:"  # plugin-scoped name when installed as a plugin
+EXECUTOR_AGENT = "prewalk:prewalk-executor"
+TOKEN_PREFIX = "PREWALK_HANDOFF_TOKEN: "
 
 
-def _executor_agent_name() -> str:
-    """Use the plugin-scoped name if the agent file ships with this plugin;
-    otherwise the bare name resolves against ~/.claude/agents."""
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    if root and os.path.exists(os.path.join(root, "agents", EXECUTOR_AGENT + ".md")):
-        return PLUGIN_PREFIX + EXECUTOR_AGENT
-    return EXECUTOR_AGENT
+def _deny_route(store: str, sid: str, reason: str) -> int:
+    action = core.on_handoff_failed(store, sid, reason)
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+        "systemMessage": _common.claude_commands(action.system_message),
+    }
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+    return 0
 
 
 def _handoff_prompt(state) -> str:
@@ -68,29 +72,48 @@ def main() -> int:
     if state is None:
         return 0
 
+    # Plugin hooks also run inside subagents. Only the root session may consume
+    # the one-time handoff token and bind an executor spawn.
+    if payload.get("agent_id") or payload.get("agentId"):
+        return 0
+
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return 0
 
-    # /pw-go must explicitly request the handoff. PreToolUse only routes it;
-    # PostToolUse owns confirmation because the Task may still fail or time out.
+    # /prewalk:pw-go must explicitly request the handoff. A token prevents an
+    # unrelated or concurrent Agent call from consuming the pending route.
     if state.phase != core.HANDOFF_REQUESTED or state.handoff_done or state.handoff_routed:
+        return 0
+
+    existing_prompt = str(tool_input.get("prompt") or tool_input.get("description") or "")
+    token_line = TOKEN_PREFIX + state.handoff_token
+    if not state.handoff_token or token_line not in existing_prompt.splitlines():
         return 0
 
     executor_model = state.executor_model
     if not executor_model:
-        return 0  # nothing to force — leave the spawn alone
+        return _deny_route(store, sid, "Prewalk cannot route an Agent call without an executor model.")
 
-    # Rewrite the spawn into the executor subagent with the model forced on.
+    tool_use_id = str(payload.get("tool_use_id") or payload.get("toolUseId") or "").strip()
+    if not tool_use_id:
+        return _deny_route(
+            store, sid, "Prewalk cannot safely route an Agent call without tool_use_id."
+        )
+
+    # Rewrite the spawn into the exact plugin-scoped executor with the model forced on.
     updated = dict(tool_input)
-    updated["subagent_type"] = _executor_agent_name()
+    updated["subagent_type"] = EXECUTOR_AGENT
     updated["model"] = executor_model
     # Prepend the handoff protocol to whatever prompt the caller supplied.
-    existing_prompt = str(updated.get("prompt") or updated.get("description") or "")
     updated["prompt"] = (_handoff_prompt(state) + "\n\n--- Task ---\n" + existing_prompt).strip()
     updated.pop("description", None)
 
     state.handoff_routed = True
+    state.handoff_token = ""
+    state.handoff_tool_use_id = tool_use_id
+    state.executor_agent_id = ""
+    state.handoff_launch_acknowledged = False
     core.save_state(store, state)
 
     out = {
@@ -100,8 +123,8 @@ def main() -> int:
             "updatedInput": updated,
         },
         "systemMessage": (
-            f"prewalk: routed Task to {EXECUTOR_AGENT} on {executor_model}; "
-            "waiting for the Task result before confirming handoff"
+            f"prewalk: routed Agent {tool_use_id} to {EXECUTOR_AGENT} on {executor_model}; "
+            "waiting for the bound subagent lifecycle"
         ),
     }
     sys.stdout.write(json.dumps(out, ensure_ascii=False))

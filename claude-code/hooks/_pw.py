@@ -35,26 +35,26 @@ def main() -> int:
         # on_pw_go always returns an action (handoff note or no-checkpoint msg).
         # For the handoff case additional_context holds the note; otherwise it
         # holds the no-checkpoint message.
-        print(action.additional_context or action.system_message)
+        print(_common.claude_commands(action.additional_context or action.system_message))
         if action.system_message:
             print()
-            print(action.system_message)
+            print(_common.claude_commands(action.system_message))
         return 0
 
     if sub == "revise":
         revision = " ".join(sys.argv[3:]).strip()
         action = core.on_pw_revise(store, session_id, revision)
-        print(action.additional_context or action.system_message)
+        print(_common.claude_commands(action.additional_context or action.system_message))
         return 0
 
     if sub in ("confirm", "resume"):
         action = core.on_handoff_confirm(store, session_id)
-        print(action.additional_context or action.system_message)
+        print(_common.claude_commands(action.additional_context or action.system_message))
         return 0
 
     if sub == "fail":
         action = core.on_handoff_failed(store, session_id, " ".join(sys.argv[3:]))
-        print(action.additional_context or action.system_message)
+        print(_common.claude_commands(action.additional_context or action.system_message))
         return 0
 
     if sub in ("complete", "incomplete"):
@@ -64,7 +64,7 @@ def main() -> int:
             complete=sub == "complete",
             detail=" ".join(sys.argv[3:]),
         )
-        print(action.additional_context or action.system_message)
+        print(_common.claude_commands(action.additional_context or action.system_message))
         return 0
 
     print("unknown subcommand: " + sub, file=sys.stderr)
