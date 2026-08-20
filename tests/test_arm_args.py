@@ -32,7 +32,8 @@ def load_arm(host: str):
 class ArmArgumentTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.parsers = [load_arm(host)._parse_args for host in ("codex", "claude-code")]
+        cls.modules = {host: load_arm(host) for host in ("codex", "claude-code")}
+        cls.parsers = [module._parse_args for module in cls.modules.values()]
 
     def assert_parses(self, arguments: list[str], expected: tuple[str | None, bool]) -> None:
         for parse in self.parsers:
@@ -63,6 +64,20 @@ class ArmArgumentTests(unittest.TestCase):
             with self.subTest(parser=parse.__module__):
                 with self.assertRaisesRegex(ValueError, "requires a name"):
                     parse(["--preset"])
+
+    def test_codex_catalog_extracts_native_model_slugs(self) -> None:
+        parse = self.modules["codex"]._codex_catalog_ids
+        self.assertEqual(
+            parse({"models": [{"slug": "gpt-5.6-sol"}, {"slug": " gpt-5.6-terra "}]}),
+            {"gpt-5.6-sol", "gpt-5.6-terra"},
+        )
+
+    def test_codex_catalog_rejects_missing_or_empty_models(self) -> None:
+        parse = self.modules["codex"]._codex_catalog_ids
+        for payload in ({}, {"models": []}, {"models": [{"display_name": "unknown"}]}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    parse(payload)
 
 
 if __name__ == "__main__":

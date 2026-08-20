@@ -118,6 +118,43 @@ def _codex_version() -> tuple[tuple[int, int, int] | None, str]:
     return (tuple(map(int, match.groups())) if match else None), detail
 
 
+def _codex_catalog_ids(payload: object) -> set[str]:
+    """Extract model slugs from the native ``codex debug models`` response."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise ValueError("expected an object containing a models array")
+    model_ids = {
+        model["slug"].strip()
+        for model in payload["models"]
+        if isinstance(model, dict)
+        and isinstance(model.get("slug"), str)
+        and model["slug"].strip()
+    }
+    if not model_ids:
+        raise ValueError("models array contains no model slugs")
+    return model_ids
+
+
+def _codex_model_catalog() -> tuple[set[str] | None, str]:
+    try:
+        result = subprocess.run(
+            ["codex", "debug", "models"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"unavailable ({exc})"
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        return None, detail[-1] if detail else f"exit {result.returncode}"
+    try:
+        model_ids = _codex_catalog_ids(json.loads(result.stdout))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return None, f"invalid response ({exc})"
+    return model_ids, f"{len(model_ids)} model(s) from codex debug models"
+
+
 def cmd_doctor(given_session_id: str, rest: list[str]) -> int:
     failures = 0
 
@@ -189,8 +226,16 @@ def cmd_doctor(given_session_id: str, rest: list[str]) -> int:
         check(report.routing_allowed, "live executor routing", report.model_proven)
     else:
         print("WARN  live executor routing: pass the current spawn_agent schema fields to validate it")
-    print("WARN  model catalog API: Codex exposes no non-billable catalog; availability is launch-time")
-    print("PASS  model availability policy: configured IDs are validated by the native route at launch")
+    catalog, catalog_detail = _codex_model_catalog()
+    if catalog is None:
+        print(f"WARN  native model catalog: {catalog_detail}; availability will be validated at launch")
+    elif preset.executor_model in catalog:
+        print(f"PASS  native model catalog: {preset.executor_model} ({catalog_detail})")
+    else:
+        print(
+            f"WARN  native model catalog: {preset.executor_model} is not listed "
+            f"({catalog_detail}); it may require a custom provider"
+        )
     return 1 if failures else 0
 
 
