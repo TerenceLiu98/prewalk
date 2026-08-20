@@ -26,10 +26,9 @@ codex plugin marketplace add TerenceLiu98/prewalk
 codex plugin add prewalk@prewalk-marketplace
 ```
 
-Restart Codex, select the planner reported by your preset, then run:
+Restart Codex, then run in the session you want to use as the planner:
 
 ```text
-/model gpt-5.6-sol
 $prewalk:prewalk Add a settings page with tests
 $prewalk:pw-go
 ```
@@ -48,7 +47,6 @@ claude plugin install prewalk@prewalk
 Restart Claude Code, then run:
 
 ```text
-/model opus
 /prewalk:prewalk Add a settings page with tests
 /prewalk:pw-go
 ```
@@ -141,13 +139,13 @@ want multiple routes.
 Templates are in [codex/presets.example.toml](codex/presets.example.toml) and
 [claude-code/presets.example.json](claude-code/presets.example.json).
 
-A preset controls:
+A preset configures the executor; the active root session remains the planner:
 
 | Field | Meaning |
 | --- | --- |
-| `planner`, `executor` | Host-resolvable model names |
+| `executor` | Host-resolvable executor model |
 | `max_todos` | Maximum real tasks in the handoff plan |
-| `planner_thinking`, `executor_thinking` | Requested effort when the host exposes that control |
+| `executor_effort` | Requested effort when the host exposes a per-spawn control |
 | `handoff_mode` | `auto`, `spawn`, or `manual-model` |
 | `require_model_routing` | Refuse an unpinned executor spawn when `true` |
 
@@ -157,18 +155,18 @@ Example TOML:
 default_preset = "code-value"
 
 [presets.code-value]
-planner = "gpt-5.6-sol"
-executor = "gpt-5.6-luna"
+executor = "gpt-5.6-terra"
 max_todos = 12
-planner_thinking = "high"
-executor_thinking = "medium"
+executor_effort = "medium"
 handoff_mode = "auto"
 require_model_routing = true
 ```
 
-Thinking settings are capability declarations, not a promise that every host
-API can apply them. `pw-doctor` reports what can be checked statically; Codex's
-runtime spawn schema must be inspected at handoff time.
+Legacy `planner` and `planner_thinking` fields are ignored with a deprecation
+warning. `executor_thinking` is accepted as a deprecated alias for
+`executor_effort`. Codex requests effort only when the live `spawn_agent`
+schema supports it; Claude currently reports dynamic executor effort as
+unsupported.
 
 ## Handoff and recovery
 

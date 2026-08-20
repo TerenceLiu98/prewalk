@@ -84,6 +84,10 @@ class EndToEndFlowTests(unittest.TestCase):
         session_id = "codex-e2e"
         armed = self.run_script("codex", "_arm.py", "arm", session_id, "Build the feature")
         self.assertIn("prewalk ARMED", armed.stdout)
+        self.assertIn("planner : active root session", armed.stdout)
+        self.assertIn("configured: executor=gpt-5.6-terra", armed.stdout)
+        self.assertIn("proven    : model=unproven", armed.stdout)
+        self.assertNotIn("Switch this session", armed.stdout)
 
         todos = self.todo_payload(session_id, "codex")
         self.run_script("codex", "todo_tracker.py", payload=todos)
@@ -99,7 +103,7 @@ class EndToEndFlowTests(unittest.TestCase):
         self.assertIn("spawn_agent", handoff.stdout)
         self.assertIn('task_name="prewalk_executor_1"', handoff.stdout)
         self.assertIn('fork_turns="none"', handoff.stdout)
-        self.assertIn('model="gpt-5.6-luna"', handoff.stdout)
+        self.assertIn('model="gpt-5.6-terra"', handoff.stdout)
         pending = self.run_script("codex", "_arm.py", "status", session_id)
         self.assertIn("handoff_requested", pending.stdout)
 
@@ -215,6 +219,10 @@ class EndToEndFlowTests(unittest.TestCase):
         session_id = "claude-e2e"
         armed = self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
         self.assertIn("prewalk ARMED", armed.stdout)
+        self.assertIn("planner : active root session", armed.stdout)
+        self.assertIn("configured: executor=haiku", armed.stdout)
+        self.assertIn("proven    : model=hook-rewrite", armed.stdout)
+        self.assertNotIn("Switch this session", armed.stdout)
 
         self.run_script(
             "claude-code",
@@ -301,6 +309,23 @@ class EndToEndFlowTests(unittest.TestCase):
         })
         status = self.run_script("claude-code", "_arm.py", "status", session_id)
         self.assertIn("idle", status.stdout)
+
+    def test_claude_conflicting_executor_override_refuses_to_arm(self) -> None:
+        session_id = "claude-route-conflict"
+        result = self.run_script(
+            "claude-code",
+            "_arm.py",
+            "arm",
+            session_id,
+            "Build the feature",
+            extra_env={"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"},
+            expected_returncode=1,
+        )
+
+        self.assertIn("cannot arm", result.stderr)
+        self.assertIn("override-conflict", result.stderr)
+        store = Path(self.temp_dir.name) / "claude-code" / "prewalk-state.json"
+        self.assertFalse(store.exists())
 
     def test_claude_failed_task_restores_retryable_checkpoint(self) -> None:
         session_id = "claude-retry"

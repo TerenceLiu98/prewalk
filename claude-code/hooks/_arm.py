@@ -79,21 +79,29 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
             "claude-code/presets.example.json there first. Falling back to built-in defaults.",
             file=sys.stderr,
         )
-        preset = core.Preset("default", "opus", "haiku", "built-in fallback", core.DEFAULT_MAX_TODOS)
+        preset = core.Preset(
+            name="default",
+            executor_model="haiku",
+            description="built-in fallback",
+            max_todos=core.DEFAULT_MAX_TODOS,
+        )
     else:
         name = preset_name or core.default_preset_json(presets_path)
         preset = presets.get(name) or next(iter(presets.values()))
         preset_name = preset.name
 
+    report = core.evaluate_capabilities(preset, "claude", environment=dict(os.environ))
+    if not report.routing_allowed:
+        print("prewalk: cannot arm because required executor routing is not provable.", file=sys.stderr)
+        print(core.format_capability_report(report), file=sys.stderr)
+        return 1
     core.start_run(_common.store_file(), session_id, preset, auto_swap=auto_swap)
     print(f"prewalk ARMED  [{preset.name}]  auto_swap={auto_swap}")
-    print(f"  planner : {preset.planner_model}")
-    print(f"  executor: {preset.executor_model}")
-    print(f"  thinking: {preset.planner_thinking or 'host default'} -> {preset.executor_thinking or 'host default'}")
+    print("  planner : active root session (Prewalk does not change it)")
     print(f"  handoff : {preset.handoff_mode} (model routing required={preset.require_model_routing})")
+    print(core.format_capability_report(report))
     print()
-    print("Switch this session to the planner now by running: /model " + preset.planner_model)
-    print("Then follow the frontier protocol from the /prewalk:prewalk skill.")
+    print("Continue in this active session and follow /prewalk:prewalk.")
     return 0
 
 
@@ -122,7 +130,13 @@ def cmd_doctor() -> int:
     check(manifest_ok, "hook manifest", str(manifest))
     store_parent = Path(_common.store_file()).parent
     check(store_parent.is_dir() and os.access(store_parent, os.W_OK), "state directory", str(store_parent))
-    print("PASS  Task model routing: Claude PreToolUse updatedInput is configured")
+    preset = (
+        presets.get(core.default_preset_json(presets_path)) or next(iter(presets.values()))
+        if presets else core.Preset("default", "haiku")
+    )
+    report = core.evaluate_capabilities(preset, "claude", environment=dict(os.environ))
+    print(core.format_capability_report(report))
+    check(report.routing_allowed, "executor model routing", report.model_proven)
     return 1 if failures else 0
 
 
@@ -137,6 +151,15 @@ def main() -> int:
         return cmd_arm(session_id, rest)
     if sub == "status":
         print(_common.claude_commands(core.describe(store, session_id)))
+        state = core.load_state(store, session_id)
+        if state is not None:
+            presets = core.load_presets_json(_common.presets_file())
+            preset = presets.get(state.preset) or core.Preset(
+                state.preset, state.executor_model, executor_effort=state.executor_thinking
+            )
+            print(core.format_capability_report(
+                core.evaluate_capabilities(preset, "claude", environment=dict(os.environ))
+            ))
         return 0
     if sub == "disarm":
         print(_common.claude_commands(core.disarm(store, session_id)))

@@ -13,7 +13,8 @@ python3 hooks/_arm.py arm "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" "$ARGUMENT
 
 Options must precede task text: `--preset <name>` selects a preset and
 `--fast` enables automatic handoff after validation (`--no-pause` is a legacy
-alias). Task words never select presets.
+alias). Task words never select presets. The active root session is the planner;
+Prewalk never changes it.
 
 ## Frontier protocol
 

@@ -22,9 +22,8 @@ class PrewalkCoreTests(unittest.TestCase):
         self.session_id = "test-session"
         self.preset = core.Preset(
             name="test",
-            planner_model="planner-model",
             executor_model="executor-model",
-            executor_thinking="medium",
+            executor_effort="medium",
         )
 
     def start_ready_run(self) -> core.PrewalkState:
@@ -198,7 +197,7 @@ class PrewalkCoreTests(unittest.TestCase):
         self.assertEqual(core.load_state(self.store, self.session_id), state)
         self.assertIsInstance(json.loads(self.store.read_text(encoding="utf-8")), dict)
 
-    def test_preset_parsers_load_handoff_and_thinking_capabilities(self) -> None:
+    def test_preset_parser_ignores_legacy_planner_and_maps_executor_effort(self) -> None:
         toml_path = Path(self.temp_dir.name) / "presets.toml"
         toml_path.write_text(
             '\n'.join([
@@ -213,8 +212,11 @@ class PrewalkCoreTests(unittest.TestCase):
             encoding="utf-8",
         )
         preset = core.load_presets_toml(toml_path)["fast"]
-        self.assertEqual(preset.planner_thinking, "high")
-        self.assertEqual(preset.executor_thinking, "low")
+        self.assertEqual(preset.planner_model, "active-session")
+        self.assertEqual(preset.planner_thinking, "")
+        self.assertEqual(preset.executor_effort, "low")
+        self.assertEqual(len(preset.deprecation_warnings), 3)
+        self.assertTrue(any("planner is deprecated" in item for item in preset.deprecation_warnings))
         self.assertEqual(preset.handoff_mode, "manual-model")
         self.assertFalse(preset.require_model_routing)
 

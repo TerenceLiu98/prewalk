@@ -1,7 +1,8 @@
 # Prewalk for Codex
 
-This plugin uses a strong Codex model to explore, plan, and complete the first
-verified task, then hands a structured packet to a configured executor.
+This plugin uses the active root Codex session to explore, plan, and complete
+the first verified task, then hands a structured packet to a configured
+executor. Presets never select or replace the root model.
 
 See the repository [README](../README.md) for the user workflow and preset
 schema. This document covers the Codex-specific adapter.
