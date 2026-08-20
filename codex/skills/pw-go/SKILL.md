@@ -8,7 +8,7 @@ description: Request and confirm a capability-safe Prewalk executor handoff at t
 Run the state transition helper and follow its output exactly:
 
 ```bash
-python3 hooks/_pw.py go "$CODEX_SESSION_ID"
+python3 hooks/_pw.py go "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}"
 ```
 
 If no active checkpoint exists, report that in one line and stop.
@@ -26,21 +26,21 @@ If no active checkpoint exists, report that in one line and stop.
 3. If spawning fails, restore the checkpoint immediately:
 
 ```bash
-python3 hooks/_pw.py fail "$CODEX_SESSION_ID" "<failure reason>"
+python3 hooks/_pw.py fail "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" "<failure reason>"
 ```
 
 4. Only after the spawn call succeeds, confirm it:
 
 ```bash
-python3 hooks/_pw.py confirm "$CODEX_SESSION_ID"
+python3 hooks/_pw.py confirm "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}"
 ```
 
 5. Wait for the executor. Its report ends with `PREWALK_COMPLETE` or
    `PREWALK_INCOMPLETE: <reason>`. Record that result:
 
 ```bash
-python3 hooks/_pw.py complete "$CODEX_SESSION_ID"
-python3 hooks/_pw.py incomplete "$CODEX_SESSION_ID" "<reason>"
+python3 hooks/_pw.py complete "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}"
+python3 hooks/_pw.py incomplete "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" "<reason>"
 ```
 
 Incomplete work restores PAUSED so the user can run `pw-go` or `pw-revise`

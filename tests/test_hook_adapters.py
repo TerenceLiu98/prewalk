@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,6 +155,37 @@ class HookAdapterTests(unittest.TestCase):
             for payload in fixtures:
                 with self.subTest(adapter=adapter.__name__, payload=payload):
                     self.assertFalse(adapter.normalize_edit_success(payload))
+
+    def test_codex_thread_identity_is_authoritative(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"CODEX_THREAD_ID": "thread-a", "CODEX_SESSION_ID": "legacy-a"},
+            clear=False,
+        ):
+            self.assertEqual(self.codex.resolve_session_id(""), "thread-a")
+            self.assertEqual(self.codex.resolve_session_id("thread-a"), "thread-a")
+            self.assertEqual(self.codex.resolve_session_id("thread-b"), "")
+            self.assertEqual(self.codex.session_id({"session_id": "thread-a"}), "thread-a")
+            self.assertEqual(self.codex.session_id({"session_id": "thread-b"}), "")
+
+    def test_codex_legacy_explicit_id_is_accepted_without_thread_env(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            with mock.patch.dict(
+                os.environ, {"CODEX_THREAD_ID": "", "CODEX_SESSION_ID": ""}, clear=False
+            ):
+                self.assertEqual(self.codex.resolve_session_id("legacy-explicit"), "legacy-explicit")
+
+    def test_codex_never_guesses_the_latest_rollout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions = Path(tmp) / "sessions" / "2026" / "08"
+            sessions.mkdir(parents=True)
+            (sessions / "rollout-2026-08-20-fake-thread.jsonl").write_text("{}\n")
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_HOME": tmp, "CODEX_THREAD_ID": "", "CODEX_SESSION_ID": ""},
+                clear=False,
+            ):
+                self.assertEqual(self.codex.resolve_session_id(""), "")
 
     def test_mutation_detection_distinguishes_commands_from_text(self) -> None:
         true_fixtures = [

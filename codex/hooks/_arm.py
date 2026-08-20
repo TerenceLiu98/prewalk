@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import shlex
 
@@ -96,7 +98,22 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
     return 0
 
 
-def cmd_doctor() -> int:
+MIN_CODEX_VERSION = (0, 146, 0)
+
+
+def _codex_version() -> tuple[tuple[int, int, int] | None, str]:
+    try:
+        result = subprocess.run(
+            ["codex", "--version"], text=True, capture_output=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, "not found"
+    detail = (result.stdout or result.stderr).strip().splitlines()[-1]
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", detail)
+    return (tuple(map(int, match.groups())) if match else None), detail
+
+
+def cmd_doctor(given_session_id: str) -> int:
     failures = 0
 
     def check(ok: bool, label: str, detail: str = "") -> None:
@@ -106,6 +123,22 @@ def cmd_doctor() -> int:
 
     check(sys.version_info >= (3, 10), "Python", sys.version.split()[0])
     check(core.VERSION == "0.3.0", "shared core", core.VERSION)
+    version, version_text = _codex_version()
+    check(
+        version is not None and version >= MIN_CODEX_VERSION,
+        "Codex CLI >= 0.146.0",
+        version_text,
+    )
+    thread_id = os.environ.get("CODEX_THREAD_ID", "").strip()
+    resolved = _common.resolve_session_id(given_session_id)
+    check(
+        bool(resolved),
+        "thread identity",
+        "CODEX_THREAD_ID is active" if thread_id and resolved else (
+            "explicit legacy id accepted" if resolved else
+            "missing or mismatched; upgrade Codex and restart the thread"
+        ),
+    )
     presets_path = Path(_common.presets_file())
     presets = core.load_presets_toml(presets_path)
     if presets_path.is_file():
@@ -132,6 +165,16 @@ def main() -> int:
     sub, session_id = sys.argv[1], sys.argv[2]
     rest = sys.argv[3:]
     store = _common.store_file()
+    if sub == "doctor":
+        return cmd_doctor(session_id)
+    session_id = _common.resolve_session_id(session_id)
+    if not session_id:
+        print(
+            "prewalk: cannot continue — CODEX_THREAD_ID is missing or conflicts with the supplied id. "
+            "Use Codex CLI 0.146.0 or newer, or pass an explicit id on a legacy CLI.",
+            file=sys.stderr,
+        )
+        return 1
     if sub == "arm":
         return cmd_arm(session_id, rest)
     if sub == "status":
@@ -140,8 +183,6 @@ def main() -> int:
     if sub == "disarm":
         print(core.disarm(store, session_id))
         return 0
-    if sub == "doctor":
-        return cmd_doctor()
     print("unknown subcommand: " + sub, file=sys.stderr)
     return 2
 

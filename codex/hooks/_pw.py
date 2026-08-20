@@ -28,6 +28,13 @@ def main() -> int:
         return 2
     sub = sys.argv[1]
     session_id = _common.resolve_session_id(sys.argv[2])
+    if not session_id:
+        print(
+            "prewalk: cannot continue — CODEX_THREAD_ID is missing or conflicts with the supplied id. "
+            "Use Codex CLI 0.146.0 or newer, or pass an explicit id on a legacy CLI.",
+            file=sys.stderr,
+        )
+        return 1
     store = _common.store_file()
 
     if sub == "go":

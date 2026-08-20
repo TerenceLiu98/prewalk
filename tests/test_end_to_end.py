@@ -24,6 +24,8 @@ class EndToEndFlowTests(unittest.TestCase):
         script: str,
         *arguments: str,
         payload: dict | None = None,
+        extra_env: dict[str, str | None] | None = None,
+        expected_returncode: int = 0,
     ) -> subprocess.CompletedProcess[str]:
         config = Path(self.temp_dir.name) / host
         config.mkdir(exist_ok=True)
@@ -31,9 +33,16 @@ class EndToEndFlowTests(unittest.TestCase):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         if host == "codex":
             env["CODEX_HOME"] = str(config)
+            env.pop("CODEX_THREAD_ID", None)
+            env.pop("CODEX_SESSION_ID", None)
         else:
             env["CLAUDE_CONFIG_DIR"] = str(config)
             env["CLAUDE_PLUGIN_ROOT"] = str(ROOT / "claude-code")
+        for key, value in (extra_env or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         result = subprocess.run(
             [sys.executable, str(ROOT / host / "hooks" / script), *arguments],
             input=json.dumps(payload) if payload is not None else None,
@@ -44,7 +53,7 @@ class EndToEndFlowTests(unittest.TestCase):
             timeout=10,
             check=False,
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, expected_returncode, result.stdout + result.stderr)
         return result
 
     @staticmethod
@@ -124,6 +133,83 @@ class EndToEndFlowTests(unittest.TestCase):
         status = self.run_script("codex", "_arm.py", "status", session_id)
         self.assertIn("paused", status.stdout)
         self.assertIn("spawn schema has no model", status.stdout)
+
+    def test_codex_interleaved_threads_remain_isolated(self) -> None:
+        sessions = ("thread-a", "thread-b")
+        for session_id in sessions:
+            env = {"CODEX_THREAD_ID": session_id, "CODEX_SESSION_ID": None}
+            self.run_script(
+                "codex", "_arm.py", "arm", session_id, "Build the feature", extra_env=env
+            )
+            todos = self.todo_payload(session_id, "codex")
+            self.run_script("codex", "todo_tracker.py", payload=todos, extra_env=env)
+            self.run_script("codex", "edit_tracker.py", payload={
+                "session_id": session_id,
+                "tool_response": {"ok": True},
+            }, extra_env=env)
+            self.run_script(
+                "codex", "pause_detect.py",
+                payload=dict(todos, hook_event_name="Stop"), extra_env=env,
+            )
+            self.run_script("codex", "_pw.py", "go", session_id, extra_env=env)
+
+        self.run_script(
+            "codex", "_pw.py", "fail", "thread-a", "route rejected",
+            extra_env={"CODEX_THREAD_ID": "thread-a"},
+        )
+        self.run_script(
+            "codex", "_pw.py", "confirm", "thread-b",
+            extra_env={"CODEX_THREAD_ID": "thread-b"},
+        )
+        self.run_script(
+            "codex", "todo_tracker.py",
+            payload=self.todo_payload("thread-b", "codex", completed=True),
+            extra_env={"CODEX_THREAD_ID": "thread-b"},
+        )
+        status_a = self.run_script(
+            "codex", "_arm.py", "status", "thread-a",
+            extra_env={"CODEX_THREAD_ID": "thread-a"},
+        )
+        status_b = self.run_script(
+            "codex", "_arm.py", "status", "thread-b",
+            extra_env={"CODEX_THREAD_ID": "thread-b"},
+        )
+        self.assertIn("paused", status_a.stdout)
+        self.assertIn("route rejected", status_a.stdout)
+        self.assertIn("idle", status_b.stdout)
+
+        mismatch = self.run_script(
+            "codex", "_arm.py", "status", "thread-b",
+            extra_env={"CODEX_THREAD_ID": "thread-a"}, expected_returncode=1,
+        )
+        self.assertIn("conflicts", mismatch.stderr)
+        self.assertIn(
+            "paused",
+            self.run_script(
+                "codex", "_arm.py", "status", "thread-a",
+                extra_env={"CODEX_THREAD_ID": "thread-a"},
+            ).stdout,
+        )
+
+    def test_codex_missing_identity_does_not_create_state(self) -> None:
+        result = self.run_script(
+            "codex", "_arm.py", "arm", "", "Build the feature",
+            extra_env={"CODEX_THREAD_ID": None, "CODEX_SESSION_ID": None},
+            expected_returncode=1,
+        )
+        self.assertIn("cannot continue", result.stderr)
+        store = Path(self.temp_dir.name) / "codex" / "prewalk-state.json"
+        self.assertFalse(store.exists())
+
+    def test_codex_doctor_reports_version_and_identity_remediation(self) -> None:
+        result = self.run_script(
+            "codex", "_arm.py", "doctor", "",
+            extra_env={"CODEX_THREAD_ID": None, "CODEX_SESSION_ID": None},
+            expected_returncode=1,
+        )
+        self.assertIn("Codex CLI >= 0.146.0", result.stdout)
+        self.assertIn("thread identity", result.stdout)
+        self.assertIn("upgrade Codex and restart the thread", result.stdout)
 
     def test_claude_scripts_route_and_complete_a_full_handoff(self) -> None:
         session_id = "claude-e2e"

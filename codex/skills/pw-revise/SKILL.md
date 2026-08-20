@@ -8,7 +8,7 @@ description: Prewalk — revise the plan on the frontier model instead of handin
 Run this to fetch the revision instructions for the current checkpoint:
 
 ```bash
-python3 hooks/_pw.py revise "$CODEX_SESSION_ID" "$ARGUMENTS"
+python3 hooks/_pw.py revise "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" "$ARGUMENTS"
 ```
 
 Then follow its output:

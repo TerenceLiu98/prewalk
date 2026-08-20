@@ -8,7 +8,7 @@ schema. This document covers the Codex-specific adapter.
 
 ## Install
 
-Python 3.10+ must be available as `python3`.
+Python 3.10+ and Codex CLI 0.146.0+ are required.
 
 ```sh
 codex plugin marketplace add TerenceLiu98/prewalk
@@ -59,6 +59,9 @@ the checkpoint.
 
 Skills call `_arm.py` and `_pw.py`; hook entry points use shell wrappers because
 Codex runs plugin hooks with the plugin root as the working directory.
+All helpers prefer `CODEX_THREAD_ID`; hook payload `session_id` must match it.
+Legacy callers may still pass an explicit id when `CODEX_THREAD_ID` is absent.
+Prewalk never guesses identity from the newest rollout file.
 
 ## State
 

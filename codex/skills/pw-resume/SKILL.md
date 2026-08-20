@@ -9,7 +9,7 @@ Run this only after `pw-go` requested the manual fallback and the user completed
 `/model <executor>`:
 
 ```bash
-python3 hooks/_pw.py resume "$CODEX_SESSION_ID"
+python3 hooks/_pw.py resume "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}"
 ```
 
 If confirmation succeeds, continue the remaining todos in the current thread,
