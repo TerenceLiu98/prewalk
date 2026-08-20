@@ -48,35 +48,22 @@ def read_input() -> dict:
 
 
 def session_id(payload: dict) -> str:
-    return str(payload.get("session_id") or payload.get("sessionId") or "")
+    payload_id = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+    thread_id = os.environ.get("CODEX_THREAD_ID", "").strip()
+    if not payload_id or (thread_id and payload_id != thread_id):
+        return ""
+    return payload_id
 
 
 def resolve_session_id(given: str) -> str:
-    """Return a non-empty session id, deriving one if the caller passed none.
-
-    Codex does not reliably expose the session id to a skill's bash subprocess,
-    so $CODEX_SESSION_ID may be empty. As a safety net, derive the id from the
-    most-recently-modified rollout file under $CODEX_HOME/sessions (the UUID in
-    its filename is the session id). This can race under concurrent sessions in
-    the same CODEX_HOME; prefer having the skill pass the id explicitly."""
+    """Resolve a helper's state key without guessing another active thread."""
     given = (given or "").strip()
+    thread_id = os.environ.get("CODEX_THREAD_ID", "").strip()
+    if thread_id:
+        return thread_id if not given or given == thread_id else ""
     if given:
         return given
-    import glob
-    root = os.path.join(codez_home(), "sessions")
-    try:
-        files = sorted(glob.glob(os.path.join(root, "**", "rollout-*.jsonl"), recursive=True),
-                       key=os.path.getmtime, reverse=True)
-    except OSError:
-        files = []
-    if files:
-        name = os.path.basename(files[0])  # rollout-<ts>-<uuid>.jsonl
-        # uuid is the last dash-separated segment before .jsonl
-        stem = name[:-6] if name.endswith(".jsonl") else name
-        parts = stem.split("-")
-        # timestamp has fixed dashes; uuid is the trailing 5 groups — take last 5
-        return "-".join(parts[-5:]) if len(parts) >= 5 else stem
-    return ""
+    return os.environ.get("CODEX_SESSION_ID", "").strip()
 
 
 def _event_part(payload: dict, snake_name: str, camel_name: str):

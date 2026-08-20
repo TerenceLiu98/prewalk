@@ -8,7 +8,7 @@ description: Arm a Prewalk run where a frontier planner explores, plans, and lan
 ## Arm the run
 
 ```bash
-python3 hooks/_arm.py arm "$CODEX_SESSION_ID" "$ARGUMENTS"
+python3 hooks/_arm.py arm "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" "$ARGUMENTS"
 ```
 
 Options must precede task text: `--preset <name>` selects a preset and
