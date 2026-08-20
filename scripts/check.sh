@@ -10,6 +10,7 @@ cmp _shared/prewalk_core.py claude-code/hooks/_shared/prewalk_core.py
 python3 -m compileall -q _shared codex/hooks claude-code/hooks tests
 python3 -m unittest discover -s tests -v
 python3 scripts/check_contracts.py
+python3 scripts/check_v030_regressions.py
 ./scripts/check_native_clis.sh
 
 python3 - <<'PY'
