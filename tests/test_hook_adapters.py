@@ -79,6 +79,20 @@ class HookAdapterTests(unittest.TestCase):
         self.assertEqual(len(todos), 1)
         self.assertEqual(todos[0].content, "Patch adapter and test it")
         self.assertEqual(todos[0].status, "in_progress")
+        self.assertTrue(self.claude.has_complete_todo_snapshot(payload))
+
+    def test_single_task_update_is_not_a_complete_snapshot(self) -> None:
+        payload = {
+            "tool_name": "TaskUpdate",
+            "tool_input": {
+                "taskId": "task-2",
+                "subject": "Update adapter and verify it",
+                "status": "completed",
+            },
+            "tool_response": {"success": True},
+        }
+        self.assertEqual(len(self.claude.normalize_todos(payload)), 1)
+        self.assertFalse(self.claude.has_complete_todo_snapshot(payload))
 
     def test_claude_regular_hooks_ignore_subagent_payloads(self) -> None:
         payload = {

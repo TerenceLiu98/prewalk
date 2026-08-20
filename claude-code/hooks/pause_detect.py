@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Stop hook: request the automatic handoff for fast-mode checkpoints."""
+"""Claude root Stop hook: validate and persist the exact v4 checkpoint packet."""
 
 from __future__ import annotations
 
@@ -11,9 +11,24 @@ import prewalk_core as core  # noqa: E402
 def main() -> int:
     payload = _common.read_input()
     sid = _common.session_id(payload)
+    if not sid:
+        return 0
     store = _common.store_file()
-    action = core.on_fast_handoff(store, sid, host="claude")
-    _common.emit(action or core.on_turn_end(store, sid), event="Stop")
+    packet = str(
+        payload.get("last_assistant_message")
+        or payload.get("lastAssistantMessage")
+        or ""
+    )
+    event_id = str(payload.get("event_id") or payload.get("eventId") or "")
+    result = core.capture_v4_checkpoint(
+        store,
+        sid,
+        packet=packet,
+        todos=_common.normalize_todos(payload) or None,
+        event_id=event_id,
+    )
+    if result.message:
+        _common.emit(core.HookAction(system_message=result.message), event="Stop")
     return 0
 
 

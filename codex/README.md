@@ -36,7 +36,7 @@ Codex hooks cannot rewrite a native subagent request. After `pw-go`, the skill
 inspects the runtime `spawn_agent` schema:
 
 ```text
-validated PAUSE -> handoff_requested
+durable Stop checkpoint -> handoff_requested
   -> schema has model + fork_turns controls
      -> spawn once with fork_turns="none" -> confirm -> executor
   -> required model control is absent

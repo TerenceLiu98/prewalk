@@ -95,7 +95,9 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
         print("prewalk: cannot arm because required executor routing is not provable.", file=sys.stderr)
         print(core.format_capability_report(report), file=sys.stderr)
         return 1
-    core.start_run(_common.store_file(), session_id, preset, auto_swap=auto_swap)
+    core.start_v4_run(
+        _common.store_file(), session_id, os.getcwd(), "claude", preset, fast_mode=auto_swap
+    )
     print(f"prewalk ARMED  [{preset.name}]  auto_swap={auto_swap}")
     print("  planner : active root session (Prewalk does not change it)")
     print(f"  handoff : {preset.handoff_mode} (model routing required={preset.require_model_routing})")
@@ -150,19 +152,26 @@ def main() -> int:
     if sub == "arm":
         return cmd_arm(session_id, rest)
     if sub == "status":
-        print(_common.claude_commands(core.describe(store, session_id)))
-        state = core.load_state(store, session_id)
+        loaded = core.load_v4_state(
+            store, session_id, workspace_id=core.workspace_identity(os.getcwd())
+        )
+        state = loaded.state
+        print(_common.claude_commands(
+            f"prewalk v4: {state.phase} [{state.preset}]"
+            if state is not None else loaded.message or "prewalk: idle (no armed run in this session)."
+        ))
         if state is not None:
             presets = core.load_presets_json(_common.presets_file())
             preset = presets.get(state.preset) or core.Preset(
-                state.preset, state.executor_model, executor_effort=state.executor_thinking
+                state.preset, state.executor_model, executor_effort=state.executor_effort
             )
             print(core.format_capability_report(
                 core.evaluate_capabilities(preset, "claude", environment=dict(os.environ))
             ))
         return 0
     if sub == "disarm":
-        print(_common.claude_commands(core.disarm(store, session_id)))
+        core.clear_state(store, session_id)
+        print("prewalk disarmed. The active root session and model were unchanged.")
         return 0
     if sub == "doctor":
         return cmd_doctor()

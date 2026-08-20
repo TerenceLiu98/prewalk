@@ -1,6 +1,6 @@
 ---
 name: pw-go
-description: Request and confirm a capability-safe Prewalk executor handoff at the PAUSE checkpoint.
+description: Request a capability-safe executor handoff from a durable Prewalk Stop checkpoint.
 ---
 
 # $prewalk:pw-go - hand off to the executor
@@ -43,5 +43,5 @@ python3 hooks/_pw.py complete "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}"
 python3 hooks/_pw.py incomplete "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" "<reason>"
 ```
 
-Incomplete work restores PAUSED so the user can run `pw-go` or `pw-revise`
+Incomplete work retains the checkpoint so the user can run `pw-go` or `pw-revise`
 again. Never mark a handoff complete before the relevant tool reports success.

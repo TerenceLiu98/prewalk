@@ -48,10 +48,10 @@ Task PostToolUse
   -> acknowledge only the matching launch
 SubagentStop
   -> bound agent + PREWALK_COMPLETE: clear state
-  -> bound agent + PREWALK_INCOMPLETE: restore paused checkpoint
-  -> bound agent + missing marker: restore paused checkpoint
+  -> bound agent + PREWALK_INCOMPLETE: retain durable checkpoint
+  -> bound agent + missing marker: retain durable checkpoint
 Task failure/rejection
-  -> matching tool_use_id restores paused checkpoint
+  -> matching tool_use_id retains durable checkpoint
 ```
 
 Unrelated, nested, and concurrent Agent events cannot advance the route. The
@@ -62,13 +62,13 @@ executor receives a structured packet rather than the planner's raw context.
 `hooks/hooks.json` registers:
 
 - `SessionStart`: expose the session id to skill subprocesses.
-- `PostToolUse` todo tools: validate checkpoints and track remaining work.
-- `PostToolUse` edit/Bash/RepoPrompt tools: observe a real first mutation.
+- `PostToolUse` todo tools: persist complete real-work snapshots.
+- `PostToolUse` edit/Bash/RepoPrompt tools: never advance checkpoint state.
 - `PreToolUse` Task/Agent: route only the token-bearing handoff.
 - `SubagentStart`/`SubagentStop`: bind the executor and consume its final marker.
 - `PostToolUse` Task/Agent: acknowledge the matching launch only.
 - `PostToolUseFailure` and `PermissionDenied` Task/Agent: restore failed routes.
-- `Stop`: trigger `--fast` handoff and clean trivial runs.
+- Root `Stop`: validate todos and persist the exact assistant packet.
 
 The mutation adapter rejects failed/no-op responses and ignores `apply_patch`
 text inside shell quotes or comments.

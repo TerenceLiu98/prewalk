@@ -183,6 +183,17 @@ def normalize_todos(payload: dict) -> list[core.Todo]:
     return out
 
 
+def has_complete_todo_snapshot(payload: dict) -> bool:
+    """Return whether this event carries a list, rather than one task mutation."""
+    return any(
+        bool(_todo_items(holder))
+        for holder in (
+            _event_part(payload, "tool_input", "toolInput"),
+            _event_part(payload, "tool_response", "toolResponse"),
+        )
+    )
+
+
 def normalize_edit_success(payload: dict) -> bool:
     """Return whether a PostToolUse edit payload represents a successful edit."""
     response = _event_part(payload, "tool_response", "toolResponse")

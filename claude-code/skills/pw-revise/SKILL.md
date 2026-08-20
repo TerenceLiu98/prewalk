@@ -1,6 +1,6 @@
 ---
 name: pw-revise
-description: "Prewalk - revise the plan on the frontier model instead of handing off, then recreate the PAUSE checkpoint."
+description: "Revise a durable Prewalk checkpoint in the active root session, re-verifying task 1 when needed."
 ---
 
 # /prewalk:pw-revise `<changes>` - revise the plan on the frontier
@@ -18,8 +18,8 @@ Then follow its output:
 - **Update the todo list** to reflect the requested changes (each item still
   needs a concrete file path + a verification word).
 - **Re-verify task #1** only if the revision changed it.
-- **Re-add the `PAUSE` checkpoint todo** (content starting with `PAUSE`, marked
-  in_progress) and **STOP** again with an updated structured Handoff Packet.
+- Keep only real work in the todo list and **STOP** again with an updated
+  structured Handoff Packet.
 
 You stay on the frontier (planner) model. When the revised plan is ready, the
 user runs `/prewalk:pw-go` to hand off. If the script says there is no active
