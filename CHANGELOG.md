@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+- Repair Claude plugin frontmatter and document all seven namespaced skills.
+- Bind Claude executor results to a one-time token, routed tool call, and native
+  SubagentStart/SubagentStop identity instead of treating Agent PostToolUse as completion.
+- Bind Codex state to `CODEX_THREAD_ID` and remove the unsafe latest-rollout fallback.
+- Emit the native Codex `spawn_agent` shape with `task_name`, `message`,
+  `fork_turns: "none"`, explicit model, and optional supported reasoning effort.
+- Add minimum/latest native CLI validation, isolated plugin discovery, lifecycle
+  fixtures, and cross-session regression coverage on Linux and macOS.
+
 ## 0.3.0
 
 - Require a validated checkpoint and structured Handoff Packet.

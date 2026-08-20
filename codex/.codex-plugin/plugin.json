@@ -1,6 +1,6 @@
 {
   "name": "prewalk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Prewalk for Codex: a frontier model explores + plans + lands the first verified edit, then hands off to a cheaper executor subagent.",
   "author": {
     "name": "TerenceLiu98",

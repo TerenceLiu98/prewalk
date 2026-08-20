@@ -8,7 +8,7 @@ schema. This document covers the Claude-specific adapter.
 
 ## Install
 
-Python 3.10+ must be available as `python3`.
+Python 3.10+ and Claude Code 2.1.145+ are required.
 
 ```sh
 claude plugin marketplace add TerenceLiu98/prewalk
@@ -83,4 +83,7 @@ The plugin uses locked atomic writes and quarantines malformed JSON with a
 
 ```sh
 claude plugin marketplace update prewalk
+claude plugin update prewalk@prewalk
 ```
+
+Restart Claude Code after updating.

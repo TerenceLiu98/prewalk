@@ -122,7 +122,7 @@ def cmd_doctor(given_session_id: str) -> int:
         failures += 0 if ok else 1
 
     check(sys.version_info >= (3, 10), "Python", sys.version.split()[0])
-    check(core.VERSION == "0.3.0", "shared core", core.VERSION)
+    check(core.VERSION == "0.3.1", "shared core", core.VERSION)
     version, version_text = _codex_version()
     check(
         version is not None and version >= MIN_CODEX_VERSION,
