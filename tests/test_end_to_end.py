@@ -132,6 +132,10 @@ class EndToEndFlowTests(unittest.TestCase):
         store = Path(self.temp_dir.name) / "claude-code" / "prewalk-state.json"
         return json.loads(store.read_text(encoding="utf-8")).get(session_id)
 
+    def codex_state(self, session_id: str) -> dict | None:
+        store = Path(self.temp_dir.name) / "codex" / "prewalk-state.json"
+        return json.loads(store.read_text(encoding="utf-8")).get(session_id)
+
     def request_codex_route(self, session_id: str, *, extra_env=None) -> dict:
         handoff = self.run_script(
             "codex", "_pw.py", "go", session_id,
@@ -212,6 +216,49 @@ class EndToEndFlowTests(unittest.TestCase):
         self.assertIn("fork_turns", output["hookSpecificOutput"]["permissionDecisionReason"])
         status = self.run_script("codex", "_arm.py", "status", session_id)
         self.assertIn("incomplete", status.stdout)
+        self.assertIn("next: $prewalk:pw-retry", status.stdout)
+
+    def test_codex_retry_reuses_one_new_route_and_preserves_task_one(self) -> None:
+        session_id = "codex-retry-idempotent"
+        self.arm_codex_checkpoint(session_id)
+        tool_input = self.request_codex_route(session_id)
+        tool_input["fork_turns"] = "all"
+        self.run_script("codex", "executor_router.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_use_id": "spawn-failed",
+            "tool_input": tool_input,
+        })
+
+        arguments = (
+            "--schema-fields=task_name,message,fork_turns,model,reasoning_effort",
+        )
+        first = self.run_script("codex", "_pw.py", "retry", session_id, *arguments)
+        second = self.run_script("codex", "_pw.py", "retry", session_id, *arguments)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertIn(PACKET, first.stdout)
+        state = self.codex_state(session_id)
+        self.assertEqual(state["route_attempt"], 2)
+        self.assertEqual(state["todos"][0]["status"], "completed")
+
+    def test_codex_reconcile_requires_explicit_no_live_agent_proof(self) -> None:
+        session_id = "codex-reconcile"
+        self.arm_codex_checkpoint(session_id)
+        self.request_codex_route(session_id)
+        before = self.codex_state(session_id)
+
+        refused = self.run_script("codex", "_pw.py", "reconcile", session_id)
+        self.assertIn("did not change state", refused.stdout)
+        self.assertEqual(self.codex_state(session_id)["revision"], before["revision"])
+        accepted = self.run_script(
+            "codex", "_pw.py", "reconcile", session_id,
+            "--confirmed-not-running", "native agent list is empty",
+        )
+        self.assertIn("marked the prior route incomplete", accepted.stdout)
+        state = self.codex_state(session_id)
+        self.assertEqual(state["phase"], "incomplete")
+        self.assertEqual(state["packet"], PACKET)
 
     def test_codex_fast_mode_requests_the_same_native_route_once(self) -> None:
         session_id = "codex-fast"
@@ -485,6 +532,26 @@ class EndToEndFlowTests(unittest.TestCase):
         state = self.claude_state(session_id)
         self.assertEqual(state["phase"], "incomplete")
         self.assertEqual(state["last_error"], "model unavailable")
+        first = self.run_script("claude-code", "_pw.py", "retry", session_id)
+        second = self.run_script("claude-code", "_pw.py", "retry", session_id)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertIn(PACKET, first.stdout)
+        self.assertEqual(self.claude_state(session_id)["route_attempt"], 2)
+
+    def test_claude_status_reports_route_without_leaking_token(self) -> None:
+        session_id = "claude-safe-status"
+        self.arm_claude_checkpoint(session_id)
+        handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
+        token = self.handoff_token(handoff.stdout)
+
+        status = self.run_script("claude-code", "_arm.py", "status", session_id)
+        self.assertIn("host: claude", status.stdout)
+        self.assertIn("token=sha256:", status.stdout)
+        self.assertIn("remaining(2)", status.stdout)
+        self.assertIn("next: /prewalk:pw-go", status.stdout)
+        self.assertNotIn(token, status.stdout)
+        self.assertNotIn(token[:8], status.stdout)
+        self.assertNotIn(PACKET, status.stdout)
 
     def test_claude_missing_marker_and_duplicate_lifecycle_are_retryable(self) -> None:
         session_id = "claude-missing-marker"

@@ -4,6 +4,8 @@
 Usage:
   _pw.py go      <session_id>
   _pw.py revise  <session_id> [revision text...]
+  _pw.py retry   <session_id> --schema-fields=...
+  _pw.py reconcile <session_id> [--confirmed-not-running] [detail...]
   _pw.py resume  <session_id>
   _pw.py complete|incomplete <session_id> [detail...]
 
@@ -19,6 +21,31 @@ import _bootstrap  # noqa: F401  (locates prewalk_core.py)
 import prewalk_core as core  # noqa: E402
 
 import _common  # type: ignore[import-not-found]  # noqa: E402
+
+
+def _schema_fields(arguments: list[str]) -> set[str]:
+    fields: set[str] = set()
+    for argument in arguments:
+        if argument.startswith("--schema-fields="):
+            fields.update(
+                item.strip() for item in argument.partition("=")[2].split(",") if item.strip()
+            )
+    return fields
+
+
+def _print_route(result: core.V4CheckpointResult) -> None:
+    if result.state is not None and result.status == "handoff_requested":
+        state = result.state
+        print(f"PREWALK_TASK_NAME: {state.route_task_name}")
+        print(f"PREWALK_EXECUTOR_MODEL: {state.executor_model}")
+        if state.effort_routing_proven:
+            print(f"PREWALK_EXECUTOR_EFFORT: {state.executor_effort}")
+        print("PREWALK_FORK_TURNS: none")
+        print("PREWALK_MESSAGE_BEGIN")
+        print(result.message)
+        print("PREWALK_MESSAGE_END")
+    else:
+        print(result.message or "There is no active prewalk checkpoint in this session.")
 
 
 def main() -> int:
@@ -37,25 +64,38 @@ def main() -> int:
     store = _common.store_file()
 
     if sub == "go":
-        fields: set[str] = set()
-        for argument in sys.argv[3:]:
-            if argument.startswith("--schema-fields="):
-                fields.update(
-                    item.strip() for item in argument.partition("=")[2].split(",") if item.strip()
-                )
-        result = core.request_codex_handoff(store, session_id, schema_fields=fields)
-        if result.state is not None and result.status == "handoff_requested":
-            state = result.state
-            print(f"PREWALK_TASK_NAME: {state.route_task_name}")
-            print(f"PREWALK_EXECUTOR_MODEL: {state.executor_model}")
-            if state.effort_routing_proven:
-                print(f"PREWALK_EXECUTOR_EFFORT: {state.executor_effort}")
-            print("PREWALK_FORK_TURNS: none")
-            print("PREWALK_MESSAGE_BEGIN")
-            print(result.message)
-            print("PREWALK_MESSAGE_END")
-        else:
-            print(result.message or "There is no active prewalk checkpoint in this session.")
+        result = core.request_codex_handoff(
+            store, session_id, schema_fields=_schema_fields(sys.argv[3:])
+        )
+        _print_route(result)
+        return 0
+
+    if sub == "retry":
+        prepared = core.prepare_v4_retry(store, session_id)
+        if prepared.status == "checkpoint_ready":
+            prepared = core.request_codex_handoff(
+                store, session_id, schema_fields=_schema_fields(sys.argv[3:])
+            )
+        elif prepared.status == "handoff_requested":
+            prepared = core.request_codex_handoff(
+                store, session_id, schema_fields=_schema_fields(sys.argv[3:])
+            )
+        _print_route(prepared)
+        return 0
+
+    if sub == "reconcile":
+        confirmed = "--confirmed-not-running" in sys.argv[3:]
+        detail = " ".join(
+            argument for argument in sys.argv[3:]
+            if argument != "--confirmed-not-running"
+        )
+        result = core.reconcile_v4_route(
+            store,
+            session_id,
+            confirmed_not_running=confirmed,
+            detail=detail,
+        )
+        print(result.message)
         return 0
 
     if sub == "revise":

@@ -27,9 +27,9 @@ Restart Claude Code. `~/.claude/prewalk-presets.json` is optional; copy
 
 Use `/prewalk:pw-revise <changes>` instead of `/prewalk:pw-go` to change the
 plan. Operational skills are `/prewalk:pw-status`, `/prewalk:pw-off`,
-`/prewalk:pw-doctor`, and recovery-only `/prewalk:pw-resume`. `--fast` on
-`/prewalk:prewalk` automatically requests the handoff at the validated Stop
-checkpoint.
+`/prewalk:pw-doctor`, `/prewalk:pw-retry`, and `/prewalk:pw-reconcile`.
+`/prewalk:pw-resume` is compatibility guidance only. `--fast` on
+`/prewalk:prewalk` automatically requests the handoff at the validated Stop checkpoint.
 
 ## Two-phase route
 

@@ -78,7 +78,9 @@ Restart the host after upgrading so the new hooks and skills are loaded.
 | Show state | `$prewalk:pw-status` | `/prewalk:pw-status` |
 | Disarm | `$prewalk:pw-off` | `/prewalk:pw-off` |
 | Diagnose setup | `$prewalk:pw-doctor` | `/prewalk:pw-doctor` |
-| Resume manual/recovery handoff | `$prewalk:pw-resume` | `/prewalk:pw-resume` |
+| Retry an incomplete route | `$prewalk:pw-retry` | `/prewalk:pw-retry` |
+| Reconcile an ambiguous route | `$prewalk:pw-reconcile` | `/prewalk:pw-reconcile` |
+| Manual-model compatibility | `$prewalk:pw-resume` | `/prewalk:pw-resume` |
 
 Clients may display shorter aliases or a leading slash, such as
 `/$prewalk:prewalk`. These refer to the same namespaced skills.
@@ -175,12 +177,14 @@ unsupported.
 | --- | --- | --- |
 | Route | Native `spawn_agent`, explicit model and fresh context when supported | Token-bearing Agent input rewritten to executor model/subagent |
 | Confirmation | Spawn PostToolUse binds the returned agent; bound SubagentStop owns the result | PostToolUse acknowledges launch; bound SubagentStop owns the result |
-| Failure | Durable `incomplete`; recover with `pw-retry` | Durable checkpoint retained for retry |
-| Incomplete executor | `pw-retry` or `pw-reconcile`; `pw-resume` is explicit manual fallback | Retry or revise the durable checkpoint |
+| Failure | Durable `incomplete`; recover with `pw-retry` | Durable `incomplete`; recover with `pw-retry` |
+| Incomplete executor | `pw-retry` or `pw-reconcile`; `pw-resume` is explicit manual fallback | `pw-retry`, or `pw-reconcile` after proving the agent stopped |
 
-`pw-status` shows the phase, model pair, routing attempts, checkpoint evidence,
-remaining todo count, and last error. `pw-off` clears only Prewalk state; it does
-not edit files or todos.
+`pw-status` shows phase, host, executor route, evidence, a non-secret token
+fingerprint, bound agent, timestamps, remaining work, last error, and one safe
+next command. An overdue route becomes `stale` but is never cleared or stopped.
+`pw-reconcile` requires explicit proof that its agent is no longer running.
+`pw-off` clears only Prewalk state; it does not stop an agent or edit files/todos.
 
 State is stored per session in `prewalk-state.json`. Writes use a cross-process
 lock and atomic replacement. Malformed state is preserved as

@@ -58,7 +58,8 @@ def validate_repo(root: Path) -> None:
     skill_names = {parse_frontmatter(path)["name"] for path in skills}
     agent_names = {parse_frontmatter(path)["name"] for path in agents}
     expected_skills = {
-        "prewalk", "pw-doctor", "pw-go", "pw-off", "pw-resume", "pw-revise", "pw-status"
+        "prewalk", "pw-doctor", "pw-go", "pw-off", "pw-reconcile", "pw-resume",
+        "pw-retry", "pw-revise", "pw-status"
     }
     if skill_names != expected_skills:
         raise ContractError(f"Claude skill inventory mismatch: {sorted(skill_names)}")
@@ -89,7 +90,7 @@ def validate_repo(root: Path) -> None:
         raise ContractError(f"plugin and marketplace versions disagree: {sorted(versions)}")
 
     short_command = re.compile(
-        r"(?m)(?:^|`)(/(?:prewalk(?!:)|pw-(?:go|status|revise|off|doctor|resume))\b)"
+        r"(?m)(?:^|`)(/(?:prewalk(?!:)|pw-(?:go|status|revise|off|doctor|reconcile|resume|retry))\b)"
     )
     for path in [root / "claude-code" / "README.md", *skills]:
         match = short_command.search(path.read_text(encoding="utf-8"))

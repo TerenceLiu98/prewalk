@@ -18,6 +18,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import re
+import subprocess
 import sys
 
 import _bootstrap  # noqa: F401  (locates prewalk_core.py)
@@ -107,7 +109,22 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
     return 0
 
 
-def cmd_doctor() -> int:
+MIN_CLAUDE_VERSION = (2, 1, 145)
+
+
+def _claude_version() -> tuple[tuple[int, int, int] | None, str]:
+    try:
+        result = subprocess.run(
+            ["claude", "--version"], text=True, capture_output=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, "not found"
+    detail = (result.stdout or result.stderr).strip().splitlines()[-1]
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", detail)
+    return (tuple(map(int, match.groups())) if match else None), detail
+
+
+def cmd_doctor(given_session_id: str) -> int:
     failures = 0
 
     def check(ok: bool, label: str, detail: str = "") -> None:
@@ -117,19 +134,47 @@ def cmd_doctor() -> int:
 
     check(sys.version_info >= (3, 10), "Python", sys.version.split()[0])
     check(core.VERSION == "0.3.1", "shared core", core.VERSION)
+    version, version_text = _claude_version()
+    check(
+        version is not None and version >= MIN_CLAUDE_VERSION,
+        "Claude Code >= 2.1.145",
+        version_text,
+    )
+    resolved = _common.resolve_session_id(given_session_id)
+    check(
+        bool(resolved),
+        "root session identity",
+        "SessionStart identity available" if resolved else "missing; restart after plugin install",
+    )
     presets_path = Path(_common.presets_file())
     presets = core.load_presets_json(presets_path)
     if presets_path.is_file():
         check(bool(presets), "preset parse", f"{len(presets)} preset(s) in {presets_path}")
     else:
         print(f"WARN  preset file: {presets_path} is absent; built-in defaults will be used")
+    for preset_name, configured in presets.items():
+        check(
+            bool(configured.executor_model.strip()),
+            f"model catalog/config [{preset_name}]",
+            configured.executor_model or "missing executor model",
+        )
+        for warning in configured.deprecation_warnings:
+            print(f"WARN  config deprecation [{preset_name}]: {warning}")
     manifest = Path(__file__).resolve().with_name("hooks.json")
     try:
-        json.loads(manifest.read_text(encoding="utf-8"))
-        manifest_ok = True
-    except (OSError, json.JSONDecodeError):
+        hooks = json.loads(manifest.read_text(encoding="utf-8"))["hooks"]
+        required_events = {
+            "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied",
+            "SubagentStart", "SubagentStop", "Stop", "SessionStart",
+        }
+        lifecycle_matcher = "^(prewalk:)?prewalk-executor$"
+        manifest_ok = required_events.issubset(hooks) and all(
+            [group.get("matcher") for group in hooks[event]] == [lifecycle_matcher]
+            for event in ("SubagentStart", "SubagentStop")
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
         manifest_ok = False
-    check(manifest_ok, "hook manifest", str(manifest))
+    check(manifest_ok, "plugin hooks", str(manifest))
     store_parent = Path(_common.store_file()).parent
     check(store_parent.is_dir() and os.access(store_parent, os.W_OK), "state directory", str(store_parent))
     preset = (
@@ -138,7 +183,9 @@ def cmd_doctor() -> int:
     )
     report = core.evaluate_capabilities(preset, "claude", environment=dict(os.environ))
     print(core.format_capability_report(report))
-    check(report.routing_allowed, "executor model routing", report.model_proven)
+    check(report.routing_allowed, "live executor routing", report.model_proven)
+    print("WARN  model catalog API: Claude exposes no non-billable catalog; availability is launch-time")
+    print("PASS  model availability policy: configured IDs are validated by Claude at Agent launch")
     return 1 if failures else 0
 
 
@@ -152,29 +199,20 @@ def main() -> int:
     if sub == "arm":
         return cmd_arm(session_id, rest)
     if sub == "status":
+        workspace_id = core.workspace_identity(os.getcwd())
+        core.detect_v4_stale(store, session_id, workspace_id=workspace_id)
         loaded = core.load_v4_state(
-            store, session_id, workspace_id=core.workspace_identity(os.getcwd())
+            store, session_id, workspace_id=workspace_id
         )
-        state = loaded.state
         print(_common.claude_commands(
-            f"prewalk v4: {state.phase} [{state.preset}]"
-            if state is not None else loaded.message or "prewalk: idle (no armed run in this session)."
+            core.format_v4_status(loaded, host="claude")
         ))
-        if state is not None:
-            presets = core.load_presets_json(_common.presets_file())
-            preset = presets.get(state.preset) or core.Preset(
-                state.preset, state.executor_model, executor_effort=state.executor_effort
-            )
-            print(core.format_capability_report(
-                core.evaluate_capabilities(preset, "claude", environment=dict(os.environ))
-            ))
         return 0
     if sub == "disarm":
-        core.clear_state(store, session_id)
-        print("prewalk disarmed. The active root session and model were unchanged.")
+        print(core.disarm(store, session_id))
         return 0
     if sub == "doctor":
-        return cmd_doctor()
+        return cmd_doctor(session_id)
     print("unknown subcommand: " + sub, file=sys.stderr)
     return 2
 
