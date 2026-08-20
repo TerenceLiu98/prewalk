@@ -995,6 +995,97 @@ CODEX_EXECUTOR_INSTRUCTIONS = (
     "exactly PREWALK_COMPLETE when all work is verified, or PREWALK_INCOMPLETE: <reason>."
 )
 
+CLAUDE_EXECUTOR_AGENT = "prewalk:prewalk-executor"
+CLAUDE_EXECUTOR_LIFECYCLE_TYPES = {CLAUDE_EXECUTOR_AGENT, "prewalk-executor"}
+CLAUDE_EXECUTOR_INSTRUCTIONS = CODEX_EXECUTOR_INSTRUCTIONS
+
+
+def claude_route_message(state: V4State) -> str:
+    """Return the canonical fresh-context prompt installed by Claude's hook."""
+    return (
+        f"PREWALK_HANDOFF_TOKEN: {state.route_token}\n\n"
+        f"{HANDOFF_NOTE}\n\n{state.packet}\n\n## Executor Contract\n"
+        f"{CLAUDE_EXECUTOR_INSTRUCTIONS}"
+    )
+
+
+def claude_route_instruction(state: V4State) -> str:
+    """Tell the root model how to make the one token-bearing Agent call."""
+    return (
+        "spawn ONE Task/Agent now. Use the complete text between "
+        "PREWALK_MESSAGE_BEGIN and PREWALK_MESSAGE_END as its prompt. Do not set or "
+        "change the subagent type or model; the PreToolUse hook owns both.\n"
+        f"PREWALK_TASK_NAME: {state.route_task_name}\n"
+        "PREWALK_MESSAGE_BEGIN\n"
+        f"{claude_route_message(state)}\n"
+        "PREWALK_MESSAGE_END"
+    )
+
+
+def request_claude_handoff(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    environment: dict[str, str] | None = None,
+) -> V4CheckpointResult:
+    """Create one token-bound Claude route after proving hook model routing."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase == V4_HANDOFF_REQUESTED:
+        return V4CheckpointResult(
+            "handoff_requested", claude_route_instruction(state), state
+        )
+    if state.phase != V4_CHECKPOINT_READY:
+        return V4CheckpointResult(
+            "not_ready", f"Prewalk has no checkpoint ready for Claude routing ({state.phase}).", state
+        )
+    preset = Preset(
+        state.preset,
+        state.executor_model,
+        executor_effort=state.executor_effort,
+        require_model_routing=state.require_model_routing,
+    )
+    capability = evaluate_capabilities(
+        preset, "claude", environment=environment or {}
+    )
+    if not capability.routing_allowed:
+        return V4CheckpointResult(
+            "unsupported_route",
+            format_capability_report(capability)
+            + "\nPrewalk retained the checkpoint; do not spawn an unpinned executor.",
+            state,
+        )
+
+    token = secrets.token_urlsafe(24)
+    attempt = state.route_attempt + 1
+    timestamp = utc_timestamp()
+    requested = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_CHECKPOINT_READY],
+        target_phase=V4_HANDOFF_REQUESTED,
+        event_id=f"claude-route:{root_session_id}:{token}",
+        now=timestamp,
+        updates={
+            "route_token": token,
+            "route_task_name": f"prewalk_executor_{attempt}_{token[:8]}",
+            "route_attempt": attempt,
+            "route_requested_at": timestamp,
+            "model_routing_proven": True,
+            "effort_routing_proven": False,
+            "route_tool_use_id": "",
+            "executor_agent_id": "",
+            "executor_started_at": "",
+            "launch_acknowledged": False,
+            "last_error": "",
+        },
+    )
+    return V4CheckpointResult(
+        "handoff_requested", claude_route_instruction(requested), requested
+    )
+
 
 def codex_route_message(state: V4State) -> str:
     """Return the one canonical fresh-context instruction for the Codex executor."""
@@ -1166,6 +1257,210 @@ class V4RouteDecision:
     allowed: bool
     message: str = ""
     state: V4State | None = None
+    updated_input: dict[str, Any] | None = None
+
+
+def _claude_agent_intended(state: V4State, tool_input: dict[str, Any]) -> bool:
+    prompt = str(tool_input.get("prompt") or tool_input.get("description") or "")
+    return bool(
+        state.route_token
+        and f"PREWALK_HANDOFF_TOKEN: {state.route_token}" in prompt.splitlines()
+    )
+
+
+def _fail_v4_route(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    state: V4State,
+    *,
+    reason: str,
+    event_id: str,
+) -> V4RouteDecision:
+    failed = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[state.phase],
+        target_phase=V4_INCOMPLETE,
+        event_id=event_id,
+        updates={"last_error": reason.strip() or "executor route failed"},
+    )
+    return V4RouteDecision(True, False, failed.last_error, failed)
+
+
+def validate_claude_agent_call(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    tool_input: dict[str, Any],
+    *,
+    tool_use_id: str,
+    environment: dict[str, str] | None = None,
+) -> V4RouteDecision:
+    """Rewrite only the token-bearing root Agent call and persist its tool ID."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4RouteDecision(False, True, state=state)
+    if state.phase != V4_HANDOFF_REQUESTED:
+        if state.route_token and _claude_agent_intended(state, tool_input):
+            return V4RouteDecision(
+                True, False, f"Prewalk route is {state.phase}; do not reuse its token.", state
+            )
+        return V4RouteDecision(False, True, state=state)
+    if not _claude_agent_intended(state, tool_input):
+        return V4RouteDecision(False, True, state=state)
+    if state.route_tool_use_id:
+        if tool_use_id == state.route_tool_use_id:
+            updated = dict(tool_input)
+            updated.update(
+                prompt=claude_route_message(state),
+                subagent_type=CLAUDE_EXECUTOR_AGENT,
+                model=state.executor_model,
+            )
+            return V4RouteDecision(
+                True, True, "Prewalk Agent route was already accepted.", state, updated
+            )
+        return V4RouteDecision(
+            True, False, "The pending Prewalk route is already claimed by another Agent call.", state
+        )
+    if not tool_use_id.strip():
+        return _fail_v4_route(
+            store_file,
+            root_session_id,
+            state,
+            reason="Prewalk cannot safely route an Agent call without tool_use_id.",
+            event_id=_v4_content_event_id("claude-agent-no-tool-id", root_session_id, tool_input),
+        )
+    preset = Preset(
+        state.preset,
+        state.executor_model,
+        executor_effort=state.executor_effort,
+        require_model_routing=state.require_model_routing,
+    )
+    capability = evaluate_capabilities(
+        preset, "claude", environment=environment or {}
+    )
+    if not capability.routing_allowed:
+        reason = format_capability_report(capability)
+        return _fail_v4_route(
+            store_file,
+            root_session_id,
+            state,
+            reason=reason,
+            event_id=f"claude-agent-route-conflict:{tool_use_id}",
+        )
+
+    updated = dict(tool_input)
+    updated.update(
+        prompt=claude_route_message(state),
+        subagent_type=CLAUDE_EXECUTOR_AGENT,
+        model=state.executor_model,
+    )
+    accepted = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_HANDOFF_REQUESTED],
+        target_phase=V4_HANDOFF_REQUESTED,
+        event_id=f"claude-agent-pre:{tool_use_id}",
+        updates={"route_tool_use_id": tool_use_id},
+    )
+    return V4RouteDecision(
+        True, True, "Prewalk routed the exact token-bearing Agent call.", accepted, updated
+    )
+
+
+def bind_claude_executor(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    agent_id: str,
+    agent_type: str,
+) -> V4RouteDecision:
+    """Bind the first exact scoped SubagentStart after the accepted Agent call."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None or agent_type not in CLAUDE_EXECUTOR_LIFECYCLE_TYPES:
+        return V4RouteDecision(False, True, state=state)
+    if state.phase == V4_EXECUTOR_RUNNING and agent_id == state.executor_agent_id:
+        return V4RouteDecision(True, True, "Prewalk executor was already bound.", state)
+    if state.phase != V4_HANDOFF_REQUESTED or not state.route_tool_use_id:
+        return V4RouteDecision(False, True, state=state)
+    if not agent_id.strip():
+        return _fail_v4_route(
+            store_file,
+            root_session_id,
+            state,
+            reason="SubagentStart did not provide an executor agent identity.",
+            event_id=f"claude-subagent-start-missing:{state.route_tool_use_id}",
+        )
+    timestamp = utc_timestamp()
+    running = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_HANDOFF_REQUESTED],
+        target_phase=V4_EXECUTOR_RUNNING,
+        event_id=f"claude-subagent-start:{state.route_tool_use_id}:{agent_id}",
+        now=timestamp,
+        updates={"executor_agent_id": agent_id, "executor_started_at": timestamp},
+    )
+    return V4RouteDecision(True, True, f"Prewalk bound executor {agent_id}.", running)
+
+
+def acknowledge_claude_agent_call(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    tool_use_id: str,
+) -> V4RouteDecision:
+    """Record Agent PostToolUse as launch acknowledgement, never completion."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if (
+        state is None
+        or state.phase not in (V4_HANDOFF_REQUESTED, V4_EXECUTOR_RUNNING)
+        or not tool_use_id
+        or tool_use_id != state.route_tool_use_id
+    ):
+        return V4RouteDecision(False, True, state=state)
+    if state.launch_acknowledged:
+        return V4RouteDecision(True, True, "Prewalk launch was already acknowledged.", state)
+    acknowledged = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[state.phase],
+        target_phase=state.phase,
+        event_id=f"claude-agent-post:{tool_use_id}",
+        updates={"launch_acknowledged": True},
+    )
+    return V4RouteDecision(
+        True, True, "prewalk: Agent launch acknowledged; waiting for bound SubagentStop.", acknowledged
+    )
+
+
+def fail_claude_agent_call(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    tool_use_id: str,
+    reason: str,
+) -> V4RouteDecision:
+    """Retain a retryable checkpoint after exact Agent denial or launch failure."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if (
+        state is None
+        or state.phase not in (V4_HANDOFF_REQUESTED, V4_EXECUTOR_RUNNING)
+        or not tool_use_id
+        or tool_use_id != state.route_tool_use_id
+    ):
+        return V4RouteDecision(False, True, state=state)
+    normalized = reason.strip() or "executor Agent failed or was rejected"
+    return _fail_v4_route(
+        store_file,
+        root_session_id,
+        state,
+        reason=normalized,
+        event_id=_v4_content_event_id("claude-agent-failed", root_session_id, tool_use_id, normalized),
+    )
 
 
 def _codex_spawn_intended(state: V4State, tool_input: dict[str, Any]) -> bool:

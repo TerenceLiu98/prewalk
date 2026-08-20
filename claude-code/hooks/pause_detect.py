@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 import _bootstrap  # noqa: F401
 import _common  # type: ignore[import-not-found]
 import prewalk_core as core  # noqa: E402
@@ -27,6 +29,19 @@ def main() -> int:
         todos=_common.normalize_todos(payload) or None,
         event_id=event_id,
     )
+    if (
+        result.status == "checkpoint_ready"
+        and result.state is not None
+        and result.state.fast_mode
+    ):
+        route = core.request_claude_handoff(
+            store, sid, environment=dict(os.environ)
+        )
+        if route.status == "handoff_requested":
+            _common.emit(
+                core.HookAction(proceed=False, block_reason=route.message), event="Stop"
+            )
+            return 0
     if result.message:
         _common.emit(core.HookAction(system_message=result.message), event="Stop")
     return 0

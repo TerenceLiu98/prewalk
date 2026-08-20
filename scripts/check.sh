@@ -61,8 +61,8 @@ assert [group["matcher"] for group in hooks["PostToolUse"]] == [
     "Task|Agent",
 ]
 assert [group["matcher"] for group in hooks["PreToolUse"]] == ["Task|Agent"]
-assert [group["matcher"] for group in hooks["SubagentStart"]] == ["^prewalk:prewalk-executor$"]
-assert [group["matcher"] for group in hooks["SubagentStop"]] == ["^prewalk:prewalk-executor$"]
+assert [group["matcher"] for group in hooks["SubagentStart"]] == ["^(prewalk:)?prewalk-executor$"]
+assert [group["matcher"] for group in hooks["SubagentStop"]] == ["^(prewalk:)?prewalk-executor$"]
 assert [group["matcher"] for group in hooks["PostToolUseFailure"]] == ["Task|Agent"]
 assert [group["matcher"] for group in hooks["PermissionDenied"]] == ["Task|Agent"]
 

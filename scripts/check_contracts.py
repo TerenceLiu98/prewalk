@@ -99,8 +99,10 @@ def validate_repo(root: Path) -> None:
     hooks = json.loads((root / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     for event in ("SubagentStart", "SubagentStop"):
         matchers = [group.get("matcher") for group in hooks.get(event, [])]
-        if matchers != ["^prewalk:prewalk-executor$"]:
-            raise ContractError(f"{event} must bind only the scoped executor: {matchers}")
+        if matchers != ["^(prewalk:)?prewalk-executor$"]:
+            raise ContractError(
+                f"{event} must bind only the executor's native lifecycle names: {matchers}"
+            )
 
     codex_hooks = json.loads((root / "codex" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     spawn_matcher = r"^((functions|collaboration)\.)?spawn_agent$"

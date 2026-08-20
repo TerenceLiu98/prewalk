@@ -56,7 +56,7 @@
     ],
     "SubagentStart": [
       {
-        "matcher": "^prewalk:prewalk-executor$",
+        "matcher": "^(prewalk:)?prewalk-executor$",
         "hooks": [
           {
             "type": "command",
@@ -68,7 +68,7 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "^prewalk:prewalk-executor$",
+        "matcher": "^(prewalk:)?prewalk-executor$",
         "hooks": [
           {
             "type": "command",
