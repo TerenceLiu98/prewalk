@@ -22,6 +22,16 @@
         "hooks": [ { "type": "command",
           "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_result.py\"" } ] }
     ],
+    "SubagentStart": [
+      { "matcher": "^prewalk:prewalk-executor$",
+        "hooks": [ { "type": "command",
+          "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_lifecycle.py\"" } ] }
+    ],
+    "SubagentStop": [
+      { "matcher": "^prewalk:prewalk-executor$",
+        "hooks": [ { "type": "command",
+          "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_lifecycle.py\"" } ] }
+    ],
     "PostToolUseFailure": [
       { "matcher": "Task|Agent",
         "hooks": [ { "type": "command",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -34,6 +35,12 @@ def presets_file() -> str:
     return os.path.join(home, "prewalk-presets.json")
 
 
+def claude_commands(text: str) -> str:
+    """Render shared-core command names through the plugin skill namespace."""
+    text = text.replace("/pw-", "/prewalk:pw-")
+    return re.sub(r"(?<![A-Za-z0-9_.~-])/prewalk(?!:)", "/prewalk:prewalk", text)
+
+
 def read_input() -> dict:
     raw = sys.stdin.read()
     if not raw.strip():
@@ -44,7 +51,9 @@ def read_input() -> dict:
         return {}
 
 
-def session_id(payload: dict) -> str:
+def session_id(payload: dict, *, allow_subagent: bool = False) -> str:
+    if not allow_subagent and (payload.get("agent_id") or payload.get("agentId")):
+        return ""
     return str(payload.get("session_id") or payload.get("sessionId") or "")
 
 
@@ -329,21 +338,21 @@ def emit(action: core.HookAction | None, *, event: str, deny_as_permission: bool
         return
     out: dict = {}
     if action.system_message:
-        out["systemMessage"] = action.system_message
+        out["systemMessage"] = claude_commands(action.system_message)
     if not action.proceed:
         if deny_as_permission:
             out["hookSpecificOutput"] = {
                 "hookEventName": event or "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": action.block_reason,
+                "permissionDecisionReason": claude_commands(action.block_reason),
             }
         else:
             out["decision"] = "block"
-            out["reason"] = action.block_reason
+            out["reason"] = claude_commands(action.block_reason)
     elif action.additional_context:
         out["hookSpecificOutput"] = {
             "hookEventName": event or "PostToolUse",
-            "additionalContext": action.additional_context,
+            "additionalContext": claude_commands(action.additional_context),
         }
     if out:
         sys.stdout.write(json.dumps(out, ensure_ascii=False))

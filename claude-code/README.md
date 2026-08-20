@@ -39,17 +39,23 @@ Claude hooks cannot change the main session model. Prewalk therefore uses:
 /prewalk:pw-go
   -> state = handoff_requested
 Task PreToolUse
+  -> require one-time token and persist tool_use_id
   -> updatedInput.model = executor
   -> updatedInput.subagent_type = prewalk:prewalk-executor
-  -> state remains handoff_requested
+SubagentStart
+  -> bind matching agent_id and enter executor
 Task PostToolUse
-  -> success + PREWALK_COMPLETE: clear state
-  -> success + PREWALK_INCOMPLETE: restore paused checkpoint
-  -> failure/rejection/missing marker: restore paused checkpoint
+  -> acknowledge only the matching launch
+SubagentStop
+  -> bound agent + PREWALK_COMPLETE: clear state
+  -> bound agent + PREWALK_INCOMPLETE: restore paused checkpoint
+  -> bound agent + missing marker: restore paused checkpoint
+Task failure/rejection
+  -> matching tool_use_id restores paused checkpoint
 ```
 
-The router never claims success before the Task result. The executor receives a
-structured packet rather than the planner's raw context.
+Unrelated, nested, and concurrent Agent events cannot advance the route. The
+executor receives a structured packet rather than the planner's raw context.
 
 ## Hooks
 
@@ -58,8 +64,9 @@ structured packet rather than the planner's raw context.
 - `SessionStart`: expose the session id to skill subprocesses.
 - `PostToolUse` todo tools: validate checkpoints and track remaining work.
 - `PostToolUse` edit/Bash/RepoPrompt tools: observe a real first mutation.
-- `PreToolUse` Task/Agent: route a requested handoff.
-- `PostToolUse` Task/Agent: confirm complete or incomplete results.
+- `PreToolUse` Task/Agent: route only the token-bearing handoff.
+- `SubagentStart`/`SubagentStop`: bind the executor and consume its final marker.
+- `PostToolUse` Task/Agent: acknowledge the matching launch only.
 - `PostToolUseFailure` and `PermissionDenied` Task/Agent: restore failed routes.
 - `Stop`: trigger `--fast` handoff and clean trivial runs.
 

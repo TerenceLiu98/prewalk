@@ -37,5 +37,5 @@ Remaining Work:
 Risks / Do Not Repeat:
 ```
 
-Do not claim that handoff occurred. `/prewalk:pw-go` requests it; the Task
-result hook confirms it.
+Do not claim that handoff occurred. `/prewalk:pw-go` requests it; the bound
+executor's `SubagentStop` hook confirms its final result.

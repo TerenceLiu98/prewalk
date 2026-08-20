@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
@@ -148,6 +149,10 @@ class PrewalkState:
     handoff_mode: str = "auto"
     require_model_routing: bool = True
     handoff_routed: bool = False
+    handoff_token: str = ""
+    handoff_tool_use_id: str = ""
+    executor_agent_id: str = ""
+    handoff_launch_acknowledged: bool = False
     handoff_attempts: int = 0
     last_handoff_error: str = ""
     original_model: str = ""         # planner model, to restore after executor finishes
@@ -657,6 +662,10 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str =
     state.handoff_host = host
     state.handoff_attempts += 1
     state.handoff_routed = False
+    state.handoff_token = secrets.token_urlsafe(24) if host == "claude" else ""
+    state.handoff_tool_use_id = ""
+    state.executor_agent_id = ""
+    state.handoff_launch_acknowledged = False
     state.last_handoff_error = ""
     save_state(store_file, state)
 
@@ -683,9 +692,10 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str =
         sysmsg = f"prewalk: capability-safe handoff requested for {state.executor_model}."
     else:
         action_line = (
-            f"ACTION: spawn ONE Task whose prompt is the structured Handoff Packet. The prewalk hook will "
-            f"route it onto {state.executor_model}; a PostToolUse hook will confirm success or restore the "
-            f"checkpoint after failure. Do not switch models yourself or do the remaining edits here."
+            f"ACTION: spawn ONE Task whose prompt contains the structured Handoff Packet and this exact "
+            f"line: `PREWALK_HANDOFF_TOKEN: {state.handoff_token}`. The prewalk hook will route it onto "
+            f"{state.executor_model}. Agent PostToolUse only acknowledges launch; the bound SubagentStop "
+            f"event records the final marker. Do not switch models yourself or do the remaining edits here."
         )
         sysmsg = f"prewalk: handoff requested — spawn a Task for the remaining work (executor {state.executor_model})."
     return HookAction(
@@ -706,6 +716,49 @@ def on_handoff_confirm(store_file: str | os.PathLike[str], session_id: str) -> H
     return HookAction(system_message=f"prewalk: handoff confirmed on {state.executor_model}.")
 
 
+def on_handoff_launch_ack(
+    store_file: str | os.PathLike[str], session_id: str, tool_use_id: str
+) -> HookAction | None:
+    """Record success of the exact routed Agent call without treating it as completion."""
+    state = load_state(store_file, session_id)
+    if (
+        state is None
+        or state.phase not in (HANDOFF_REQUESTED, EXECUTOR)
+        or not state.handoff_routed
+        or not tool_use_id
+        or tool_use_id != state.handoff_tool_use_id
+    ):
+        return None
+    if state.handoff_launch_acknowledged:
+        return None
+    state.handoff_launch_acknowledged = True
+    save_state(store_file, state)
+    return HookAction(system_message="prewalk: executor launch acknowledged; waiting for its lifecycle result.")
+
+
+def on_executor_started(
+    store_file: str | os.PathLike[str], session_id: str, agent_id: str
+) -> HookAction | None:
+    """Bind the one routed Claude executor and enter the executor phase."""
+    state = load_state(store_file, session_id)
+    if (
+        state is None
+        or state.phase not in (HANDOFF_REQUESTED, EXECUTOR)
+        or not state.handoff_routed
+        or not state.handoff_tool_use_id
+        or not agent_id
+    ):
+        return None
+    if state.executor_agent_id:
+        return None
+    state.executor_agent_id = agent_id
+    state.phase = EXECUTOR
+    state.handoff_done = True
+    state.last_handoff_error = ""
+    save_state(store_file, state)
+    return HookAction(system_message=f"prewalk: executor {agent_id} started on {state.executor_model}.")
+
+
 def on_handoff_failed(
     store_file: str | os.PathLike[str], session_id: str, reason: str = "handoff failed"
 ) -> HookAction:
@@ -715,6 +768,10 @@ def on_handoff_failed(
     state.phase = PAUSED
     state.handoff_done = False
     state.handoff_routed = False
+    state.handoff_token = ""
+    state.handoff_tool_use_id = ""
+    state.executor_agent_id = ""
+    state.handoff_launch_acknowledged = False
     state.last_handoff_error = reason.strip() or "handoff failed"
     save_state(store_file, state)
     return HookAction(system_message="prewalk: handoff failed; checkpoint restored and `/pw-go` is retryable.")
@@ -735,6 +792,10 @@ def on_executor_result(
     state.phase = PAUSED
     state.handoff_done = False
     state.handoff_routed = False
+    state.handoff_token = ""
+    state.handoff_tool_use_id = ""
+    state.executor_agent_id = ""
+    state.handoff_launch_acknowledged = False
     state.last_handoff_error = detail.strip() or "executor stopped with work remaining"
     save_state(store_file, state)
     return HookAction(system_message="prewalk: executor incomplete; checkpoint restored for `/pw-go` or `/pw-revise`.")
@@ -847,6 +908,9 @@ def describe(store_file: str | os.PathLike[str], session_id: str) -> str:
         f"  handoff_mode: {state.handoff_mode}; require_model_routing: "
         f"{'yes' if state.require_model_routing else 'no'}; attempts: {state.handoff_attempts}; "
         f"routed: {'yes' if state.handoff_routed else 'no'}\n"
+        f"  route_tool: {state.handoff_tool_use_id or 'none'}; executor_agent: "
+        f"{state.executor_agent_id or 'none'}; launch_ack: "
+        f"{'yes' if state.handoff_launch_acknowledged else 'no'}\n"
         f"  fast: {'yes' if state.auto_swap else 'no'}; evidence: {state.checkpoint_evidence or 'none'}; "
         f"todos_remaining: {state.todos_remaining}; last_error: {state.last_handoff_error or 'none'}"
     )
