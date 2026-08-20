@@ -11,6 +11,19 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "^((functions|collaboration)\\.)?spawn_agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/prewalk_executor_router.sh",
+            "timeout": 30,
+            "statusMessage": "prewalk executor route check"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "^(functions\\.)?(update_plan|todo)$",
@@ -31,6 +44,30 @@
             "command": "./scripts/prewalk_edit_tracker.sh",
             "timeout": 30,
             "statusMessage": "prewalk edit tracker"
+          }
+        ]
+      },
+      {
+        "matcher": "^((functions|collaboration)\\.)?spawn_agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/prewalk_executor_router.sh",
+            "timeout": 30,
+            "statusMessage": "prewalk executor binding"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/prewalk_executor_router.sh",
+            "timeout": 30,
+            "statusMessage": "prewalk executor completion"
           }
         ]
       }

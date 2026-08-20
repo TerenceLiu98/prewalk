@@ -342,6 +342,8 @@ class V4State:
     handoff_mode: str = "auto"
     require_model_routing: bool = True
     fast_mode: bool = False
+    model_routing_proven: bool = False
+    effort_routing_proven: bool = False
     todos: list[Todo] = field(default_factory=list)
     packet: str = ""
     verification_evidence: list[str] = field(default_factory=list)
@@ -486,6 +488,8 @@ def validate_v4_state(state: V4State) -> None:
     if (
         not isinstance(state.require_model_routing, bool)
         or not isinstance(state.fast_mode, bool)
+        or not isinstance(state.model_routing_proven, bool)
+        or not isinstance(state.effort_routing_proven, bool)
         or not isinstance(state.launch_acknowledged, bool)
     ):
         raise V4StateError("v4 capability flags must be booleans")
@@ -983,6 +987,379 @@ def revise_v4_checkpoint(
         "re-verify task #1 if it changed, then stop with a replacement structured Handoff Packet."
     )
     return V4CheckpointResult("planning", instruction, revised)
+
+
+CODEX_EXECUTOR_INSTRUCTIONS = (
+    "Continue only the remaining todos from the persisted packet. Do not repeat task #1 or restart "
+    "planning. Mark one todo in progress at a time, run its stated verification, and finish with "
+    "exactly PREWALK_COMPLETE when all work is verified, or PREWALK_INCOMPLETE: <reason>."
+)
+
+
+def codex_route_message(state: V4State) -> str:
+    """Return the one canonical fresh-context instruction for the Codex executor."""
+    return (
+        f"PREWALK_ROUTE_TOKEN: {state.route_token}\n\n"
+        f"{HANDOFF_NOTE}\n\n{state.packet}\n\n## Executor Contract\n"
+        f"{CODEX_EXECUTOR_INSTRUCTIONS}"
+    )
+
+
+def request_codex_handoff(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    schema_fields: Iterable[str],
+) -> V4CheckpointResult:
+    """Create one token-bound Codex route after checking the live tool schema."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase == V4_HANDOFF_REQUESTED:
+        return V4CheckpointResult(
+            "handoff_requested", codex_route_message(state), state
+        )
+    if state.phase != V4_CHECKPOINT_READY:
+        return V4CheckpointResult(
+            "not_ready", f"Prewalk has no checkpoint ready for Codex routing ({state.phase}).", state
+        )
+    if state.handoff_mode == "manual-model":
+        return V4CheckpointResult(
+            "manual_required",
+            "This preset requires an explicit manual model switch. The checkpoint remains durable; "
+            "switch to the executor model and run pw-resume.",
+            state,
+        )
+    fields = set(schema_fields)
+    preset = Preset(
+        state.preset,
+        state.executor_model,
+        executor_effort=state.executor_effort,
+        require_model_routing=state.require_model_routing,
+    )
+    capability = evaluate_capabilities(preset, "codex", schema_fields=fields)
+    if not capability.routing_allowed:
+        return V4CheckpointResult(
+            "unsupported_route",
+            format_capability_report(capability)
+            + "\nPrewalk retained the checkpoint; do not spawn an unpinned executor.",
+            state,
+        )
+    required = {"task_name", "message", "fork_turns"}
+    missing = sorted(required - fields)
+    if missing:
+        return V4CheckpointResult(
+            "unsupported_route",
+            "The live spawn_agent schema is missing required fields: " + ", ".join(missing),
+            state,
+        )
+
+    token = secrets.token_urlsafe(24)
+    attempt = state.route_attempt + 1
+    task_name = f"prewalk_executor_{attempt}_{token[:8]}"
+    timestamp = utc_timestamp()
+    requested = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_CHECKPOINT_READY],
+        target_phase=V4_HANDOFF_REQUESTED,
+        event_id=f"codex-route:{root_session_id}:{token}",
+        now=timestamp,
+        updates={
+            "route_token": token,
+            "route_task_name": task_name,
+            "route_attempt": attempt,
+            "route_requested_at": timestamp,
+            "model_routing_proven": "model" in fields,
+            "effort_routing_proven": bool(
+                state.executor_effort and "reasoning_effort" in fields
+            ),
+            "route_tool_use_id": "",
+            "executor_agent_id": "",
+            "executor_started_at": "",
+            "launch_acknowledged": False,
+            "last_error": "",
+        },
+    )
+    return V4CheckpointResult(
+        "handoff_requested", codex_route_message(requested), requested
+    )
+
+
+def resume_codex_manual(
+    store_file: str | os.PathLike[str], root_session_id: str
+) -> V4CheckpointResult:
+    """Explicit compatibility route after the user manually changes root model."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase != V4_CHECKPOINT_READY:
+        return V4CheckpointResult(
+            "not_ready", f"Prewalk has no checkpoint ready for manual resume ({state.phase}).", state
+        )
+    token = secrets.token_urlsafe(24)
+    timestamp = utc_timestamp()
+    running = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_CHECKPOINT_READY],
+        target_phase=V4_EXECUTOR_RUNNING,
+        event_id=f"codex-manual-resume:{root_session_id}:{token}",
+        now=timestamp,
+        updates={
+            "route_token": token,
+            "route_task_name": f"manual_root_{token[:8]}",
+            "route_attempt": state.route_attempt + 1,
+            "route_requested_at": timestamp,
+            "executor_agent_id": f"manual-root:{root_session_id}",
+            "executor_started_at": timestamp,
+            "launch_acknowledged": True,
+            "last_error": "",
+        },
+    )
+    return V4CheckpointResult(
+        "executor_running",
+        f"{HANDOFF_NOTE}\n\n{running.packet}\n\n## Executor Contract\n"
+        f"{CODEX_EXECUTOR_INSTRUCTIONS}\n\n"
+        "This is the explicit manual-root fallback. Run pw-complete or pw-incomplete when finished.",
+        running,
+    )
+
+
+def finish_codex_manual(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    complete: bool,
+    detail: str = "",
+) -> V4CheckpointResult:
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if (
+        state is None
+        or state.phase != V4_EXECUTOR_RUNNING
+        or state.executor_agent_id != f"manual-root:{root_session_id}"
+    ):
+        return V4CheckpointResult(
+            "not_manual", "No explicit manual-root Prewalk executor is active.", state
+        )
+    if complete:
+        clear_state(store_file, root_session_id)
+        return V4CheckpointResult("complete", "prewalk: manual executor completed all work.")
+    reason = detail.strip() or "manual executor stopped with work remaining"
+    incomplete = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_EXECUTOR_RUNNING],
+        target_phase=V4_INCOMPLETE,
+        event_id=_v4_content_event_id("codex-manual-incomplete", root_session_id, reason),
+        updates={"last_error": reason},
+    )
+    return V4CheckpointResult("incomplete", reason, incomplete)
+
+
+@dataclass(frozen=True)
+class V4RouteDecision:
+    handled: bool
+    allowed: bool
+    message: str = ""
+    state: V4State | None = None
+
+
+def _codex_spawn_intended(state: V4State, tool_input: dict[str, Any]) -> bool:
+    task_name = str(tool_input.get("task_name") or "")
+    message = str(tool_input.get("message") or "")
+    return (
+        task_name == state.route_task_name
+        or state.route_token in task_name
+        or state.route_token in message
+    )
+
+
+def validate_codex_spawn(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    tool_input: dict[str, Any],
+    *,
+    tool_use_id: str,
+) -> V4RouteDecision:
+    """Validate and bind the exact pending Codex spawn request before execution."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4RouteDecision(False, True, state=state)
+    if state.phase != V4_HANDOFF_REQUESTED:
+        if state.route_token and _codex_spawn_intended(state, tool_input):
+            return V4RouteDecision(
+                True,
+                False,
+                f"Prewalk route is {state.phase}; do not reuse its token or spawn request.",
+                state,
+            )
+        return V4RouteDecision(False, True, state=state)
+    if not _codex_spawn_intended(state, tool_input):
+        return V4RouteDecision(False, True, state=state)
+
+    errors: list[str] = []
+    expected_message = codex_route_message(state)
+    if str(tool_input.get("task_name") or "") != state.route_task_name:
+        errors.append("task_name does not match the pending Prewalk route")
+    if str(tool_input.get("message") or "") != expected_message:
+        errors.append("message is not the exact persisted Prewalk packet")
+    if tool_input.get("fork_turns") != "none":
+        errors.append('fork_turns must be "none"')
+    if state.model_routing_proven and tool_input.get("model") != state.executor_model:
+        errors.append("model does not match the configured executor")
+    if state.require_model_routing and not state.model_routing_proven:
+        errors.append("required executor model routing was not proven")
+    if state.effort_routing_proven:
+        if tool_input.get("reasoning_effort") != state.executor_effort:
+            errors.append("reasoning_effort does not match the configured executor effort")
+    elif "reasoning_effort" in tool_input:
+        errors.append("reasoning_effort was not exposed by the live schema")
+    if not tool_use_id.strip():
+        errors.append("spawn hook payload has no tool_use_id")
+
+    if errors:
+        timestamp = utc_timestamp()
+        failed = apply_v4_transition(
+            store_file,
+            root_session_id,
+            expected_phases=[V4_HANDOFF_REQUESTED],
+            target_phase=V4_INCOMPLETE,
+            event_id=_v4_content_event_id("codex-spawn-denied", root_session_id, errors, tool_input),
+            now=timestamp,
+            updates={"last_error": "; ".join(errors)},
+        )
+        return V4RouteDecision(True, False, failed.last_error, failed)
+
+    accepted = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_HANDOFF_REQUESTED],
+        target_phase=V4_HANDOFF_REQUESTED,
+        event_id=f"codex-spawn-pre:{tool_use_id}",
+        updates={"route_tool_use_id": tool_use_id},
+    )
+    return V4RouteDecision(True, True, "Prewalk accepted the exact executor spawn.", accepted)
+
+
+def bind_codex_executor(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    tool_use_id: str,
+    agent_id: str,
+    success: bool,
+    detail: str = "",
+) -> V4RouteDecision:
+    """Bind only the agent returned by the exact accepted spawn tool call."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4RouteDecision(False, True, state=state)
+    if state.phase == V4_EXECUTOR_RUNNING and (
+        tool_use_id == state.route_tool_use_id and agent_id == state.executor_agent_id
+    ):
+        return V4RouteDecision(True, True, "Prewalk executor was already bound.", state)
+    if state.phase != V4_HANDOFF_REQUESTED:
+        return V4RouteDecision(False, True, state=state)
+    if not tool_use_id or tool_use_id != state.route_tool_use_id:
+        return V4RouteDecision(False, True, state=state)
+    timestamp = utc_timestamp()
+    if not success or not agent_id.strip():
+        error = detail.strip() or "spawn_agent did not return a usable agent identity"
+        failed = apply_v4_transition(
+            store_file,
+            root_session_id,
+            expected_phases=[V4_HANDOFF_REQUESTED],
+            target_phase=V4_INCOMPLETE,
+            event_id=f"codex-spawn-post-failed:{tool_use_id}",
+            now=timestamp,
+            updates={"last_error": error},
+        )
+        return V4RouteDecision(True, False, error, failed)
+    running = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_HANDOFF_REQUESTED],
+        target_phase=V4_EXECUTOR_RUNNING,
+        event_id=f"codex-spawn-post:{tool_use_id}:{agent_id}",
+        now=timestamp,
+        updates={
+            "executor_agent_id": agent_id,
+            "executor_started_at": timestamp,
+            "launch_acknowledged": True,
+        },
+    )
+    return V4RouteDecision(True, True, f"Prewalk bound executor {agent_id}.", running)
+
+
+def finish_v4_executor(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    agent_id: str,
+    result: str,
+    event_id: str,
+) -> V4RouteDecision:
+    """Accept a final marker only from the executor identity bound to this root."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4RouteDecision(False, True, state=state)
+    if state.phase == V4_INCOMPLETE and agent_id == state.executor_agent_id:
+        return V4RouteDecision(True, False, state.last_error, state)
+    if state.phase != V4_EXECUTOR_RUNNING:
+        return V4RouteDecision(False, True, state=state)
+    if not agent_id or agent_id != state.executor_agent_id:
+        return V4RouteDecision(False, True, state=state)
+    final_line = next((line.strip() for line in reversed(result.splitlines()) if line.strip()), "")
+    if final_line == "PREWALK_COMPLETE":
+        clear_state(store_file, root_session_id)
+        return V4RouteDecision(True, True, "prewalk: executor completed all work.")
+    reason = (
+        final_line.partition(":")[2].strip()
+        if final_line.startswith("PREWALK_INCOMPLETE:")
+        else "bound executor stopped without a valid final marker"
+    )
+    incomplete = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_EXECUTOR_RUNNING],
+        target_phase=V4_INCOMPLETE,
+        event_id=event_id or _v4_content_event_id("executor-stop", root_session_id, agent_id, result),
+        updates={"last_error": reason or "executor reported incomplete work"},
+    )
+    return V4RouteDecision(True, False, incomplete.last_error, incomplete)
+
+
+def interrupt_v4_executor(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    reason: str,
+    event_id: str = "",
+) -> V4RouteDecision:
+    """Recover a bound route when the host explicitly reports root interruption."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None or state.phase != V4_EXECUTOR_RUNNING:
+        return V4RouteDecision(False, True, state=state)
+    normalized = reason.strip()
+    if not re.search(r"\b(?:interrupt(?:ed|ion)?|cancel(?:led|ed|ation)?|abort(?:ed)?)\b", normalized, re.I):
+        return V4RouteDecision(False, True, state=state)
+    incomplete = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_EXECUTOR_RUNNING],
+        target_phase=V4_INCOMPLETE,
+        event_id=event_id or _v4_content_event_id("codex-interrupted", root_session_id, normalized),
+        updates={"last_error": normalized or "executor was interrupted"},
+    )
+    return V4RouteDecision(True, False, incomplete.last_error, incomplete)
 
 
 # ---------------------------------------------------------------------------

@@ -291,6 +291,10 @@ def _has_explicit_failure(value) -> bool:
     )
 
 
+def has_explicit_failure(value) -> bool:
+    return _has_explicit_failure(value)
+
+
 def emit(action: core.HookAction | None, *, event: str, deny_as_permission: bool = False) -> None:
     """Render a core HookAction to Codex stdout JSON (or print nothing).
 
