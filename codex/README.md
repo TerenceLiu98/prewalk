@@ -27,8 +27,9 @@ $prewalk:pw-go
 ```
 
 Use `$prewalk:pw-revise <changes>` to change the plan. Operational skills are
-`pw-status`, `pw-off`, `pw-doctor`, and `pw-resume`. `--fast` automatically
-requests the same validated handoff at the Stop checkpoint.
+`pw-status`, `pw-retry`, `pw-reconcile`, `pw-off`, `pw-doctor`, and the explicit
+manual-model fallback `pw-resume`. `--fast` automatically requests the same
+validated handoff at the Stop checkpoint.
 
 ## Capability-safe route
 

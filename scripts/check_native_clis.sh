@@ -86,15 +86,15 @@ check_claude() {
   CLAUDE_CONFIG_DIR="$TMP/claude" claude plugin marketplace add ./
   CLAUDE_CONFIG_DIR="$TMP/claude" claude plugin install prewalk@prewalk
   details="$(CLAUDE_CONFIG_DIR="$TMP/claude" claude plugin details prewalk@prewalk)"
-  [[ "$details" == *"Skills (7)"* ]]
+  [[ "$details" == *"Skills (9)"* ]]
   [[ "$details" == *"Agents (1)"* ]]
-  [[ "$details" == *"prewalk, pw-doctor, pw-go, pw-off, pw-resume, pw-revise, pw-status"* ]]
+  [[ "$details" == *"prewalk, pw-doctor, pw-go, pw-off, pw-reconcile, pw-resume, pw-retry, pw-revise, pw-status"* ]]
   [[ "$details" == *"prewalk-executor"* ]]
 
   # Exercise the session-only loader path without making a model request.
   inline_details="$(claude --plugin-dir "$ROOT/claude-code" plugin details prewalk)"
   [[ "$inline_details" == *"Source: prewalk@inline"* ]]
-  [[ "$inline_details" == *"Skills (7)"* ]]
+  [[ "$inline_details" == *"Skills (9)"* ]]
   [[ "$inline_details" == *"prewalk, pw-doctor, pw-go"* ]]
 
   prepare_upgrade_fixture "$TMP/claude-market" claude 0.3.0
@@ -110,7 +110,7 @@ check_claude() {
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin update prewalk@prewalk
   CLAUDE_CONFIG_DIR="$TMP/claude-upgrade" claude plugin list --json >"$TMP/claude-new.json"
   assert_plugin_version "$TMP/claude-new.json" claude 0.3.1
-  echo "PASS native contract: Claude $version; 7 skills, 1 agent, plugin-dir loader"
+  echo "PASS native contract: Claude $version; 9 skills, 1 agent, plugin-dir loader"
   echo "PASS native upgrade: Claude 0.3.0 -> 0.3.1"
 }
 

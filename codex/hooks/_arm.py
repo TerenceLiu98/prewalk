@@ -118,7 +118,7 @@ def _codex_version() -> tuple[tuple[int, int, int] | None, str]:
     return (tuple(map(int, match.groups())) if match else None), detail
 
 
-def cmd_doctor(given_session_id: str) -> int:
+def cmd_doctor(given_session_id: str, rest: list[str]) -> int:
     failures = 0
 
     def check(ok: bool, label: str, detail: str = "") -> None:
@@ -150,20 +150,47 @@ def cmd_doctor(given_session_id: str) -> int:
         check(bool(presets), "preset parse", f"{len(presets)} preset(s) in {presets_path}")
     else:
         print(f"WARN  preset file: {presets_path} is absent; built-in defaults will be used")
+    for preset_name, configured in presets.items():
+        check(
+            bool(configured.executor_model.strip()),
+            f"model catalog/config [{preset_name}]",
+            configured.executor_model or "missing executor model",
+        )
+        for warning in configured.deprecation_warnings:
+            print(f"WARN  config deprecation [{preset_name}]: {warning}")
     manifest = Path(__file__).resolve().parents[1] / "hooks.json"
     try:
-        json.loads(manifest.read_text(encoding="utf-8"))
-        manifest_ok = True
-    except (OSError, json.JSONDecodeError):
+        hooks = json.loads(manifest.read_text(encoding="utf-8"))["hooks"]
+        required_events = {"PreToolUse", "PostToolUse", "SubagentStop", "Stop"}
+        spawn_matcher = r"^((functions|collaboration)\.)?spawn_agent$"
+        manifest_ok = (
+            required_events.issubset(hooks)
+            and [group.get("matcher") for group in hooks["PreToolUse"]] == [spawn_matcher]
+            and len(hooks["SubagentStop"]) == 1
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
         manifest_ok = False
-    check(manifest_ok, "hook manifest", str(manifest))
+    check(manifest_ok, "plugin hooks", str(manifest))
     store_parent = Path(_common.store_file()).parent
     check(store_parent.is_dir() and os.access(store_parent, os.W_OK), "state directory", str(store_parent))
     preset = (
         presets.get(core.default_preset_toml(presets_path)) or next(iter(presets.values()))
         if presets else core.Preset("default", "gpt-5.6-terra")
     )
-    print(core.format_capability_report(core.evaluate_capabilities(preset, "codex")))
+    schema_fields = set()
+    for argument in rest:
+        if argument.startswith("--schema-fields="):
+            schema_fields.update(
+                item.strip() for item in argument.partition("=")[2].split(",") if item.strip()
+            )
+    report = core.evaluate_capabilities(preset, "codex", schema_fields=schema_fields)
+    print(core.format_capability_report(report))
+    if schema_fields:
+        check(report.routing_allowed, "live executor routing", report.model_proven)
+    else:
+        print("WARN  live executor routing: pass the current spawn_agent schema fields to validate it")
+    print("WARN  model catalog API: Codex exposes no non-billable catalog; availability is launch-time")
+    print("PASS  model availability policy: configured IDs are validated by the native route at launch")
     return 1 if failures else 0
 
 
@@ -175,7 +202,7 @@ def main() -> int:
     rest = sys.argv[3:]
     store = _common.store_file()
     if sub == "doctor":
-        return cmd_doctor(session_id)
+        return cmd_doctor(session_id, rest)
     session_id = _common.resolve_session_id(session_id)
     if not session_id:
         print(
@@ -187,24 +214,15 @@ def main() -> int:
     if sub == "arm":
         return cmd_arm(session_id, rest)
     if sub == "status":
+        workspace_id = core.workspace_identity(os.getcwd())
+        core.detect_v4_stale(store, session_id, workspace_id=workspace_id)
         loaded = core.load_v4_state(
-            store, session_id, workspace_id=core.workspace_identity(os.getcwd())
+            store, session_id, workspace_id=workspace_id
         )
-        state = loaded.state
-        print(
-            f"prewalk v4: {state.phase} [{state.preset}]"
-            if state is not None else loaded.message or "prewalk: idle (no armed run in this session)."
-        )
-        if state is not None:
-            presets = core.load_presets_toml(_common.presets_file())
-            preset = presets.get(state.preset) or core.Preset(
-                state.preset, state.executor_model, executor_effort=state.executor_effort
-            )
-            print(core.format_capability_report(core.evaluate_capabilities(preset, "codex")))
+        print(core.format_v4_status(loaded, host="codex"))
         return 0
     if sub == "disarm":
-        core.clear_state(store, session_id)
-        print("prewalk disarmed. The active root session and model were unchanged.")
+        print(core.disarm(store, session_id))
         return 0
     print("unknown subcommand: " + sub, file=sys.stderr)
     return 2

@@ -4,6 +4,8 @@
 Usage:
   _pw.py go                  <session_id>
   _pw.py revise              <session_id> [revision text...]
+  _pw.py retry               <session_id>
+  _pw.py reconcile           <session_id> [--confirmed-not-running] [detail...]
   _pw.py confirm|resume      <session_id>
   _pw.py fail                <session_id> [reason...]
   _pw.py complete|incomplete <session_id> [detail...]
@@ -40,6 +42,32 @@ def main() -> int:
         ))
         return 0
 
+    if sub == "retry":
+        result = core.prepare_v4_retry(store, session_id)
+        if result.status in ("checkpoint_ready", "handoff_requested"):
+            result = core.request_claude_handoff(
+                store, session_id, environment=dict(os.environ)
+            )
+        print(_common.claude_commands(
+            result.message or "There is no retryable prewalk checkpoint in this session."
+        ))
+        return 0
+
+    if sub == "reconcile":
+        confirmed = "--confirmed-not-running" in sys.argv[3:]
+        detail = " ".join(
+            argument for argument in sys.argv[3:]
+            if argument != "--confirmed-not-running"
+        )
+        result = core.reconcile_v4_route(
+            store,
+            session_id,
+            confirmed_not_running=confirmed,
+            detail=detail,
+        )
+        print(_common.claude_commands(result.message))
+        return 0
+
     if sub == "revise":
         revision = " ".join(sys.argv[3:]).strip()
         result = core.revise_v4_checkpoint(store, session_id, revision)
@@ -49,23 +77,22 @@ def main() -> int:
         return 0
 
     if sub in ("confirm", "resume"):
-        action = core.on_handoff_confirm(store, session_id)
-        print(_common.claude_commands(action.additional_context or action.system_message))
+        print(_common.claude_commands(
+            "Claude native routes cannot be completed manually. Run pw-status, then use "
+            "pw-reconcile only after proving the prior agent is not running."
+        ))
         return 0
 
     if sub == "fail":
-        action = core.on_handoff_failed(store, session_id, " ".join(sys.argv[3:]))
-        print(_common.claude_commands(action.additional_context or action.system_message))
+        print(_common.claude_commands(
+            "Legacy manual failure is disabled; use pw-reconcile with explicit liveness proof."
+        ))
         return 0
 
     if sub in ("complete", "incomplete"):
-        action = core.on_executor_result(
-            store,
-            session_id,
-            complete=sub == "complete",
-            detail=" ".join(sys.argv[3:]),
+        print(
+            "Claude completion is accepted only from the bound executor's SubagentStop marker."
         )
-        print(_common.claude_commands(action.additional_context or action.system_message))
         return 0
 
     print("unknown subcommand: " + sub, file=sys.stderr)

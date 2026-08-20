@@ -1,18 +1,16 @@
 ---
 name: pw-resume
-description: "Recover a Claude Prewalk handoff only after independently verifying a missing executor lifecycle event."
+description: "Compatibility guidance for older Claude Prewalk recovery; canonical v4 recovery uses pw-reconcile."
 ---
 
 # Prewalk Resume
 
-This is a recovery path, not the normal handoff. First verify that the prior
-Task ran on the configured executor and inspect its final marker. Never use an
-unrelated Agent result to recover this run.
+This compatibility skill never confirms or completes a native route. Run:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_pw.py" resume "$CLAUDE_SESSION_ID"
 ```
 
-Then run `_pw.py complete` only for `PREWALK_COMPLETE`, or `_pw.py incomplete
-<reason>` for `PREWALK_INCOMPLETE`. Never confirm a rejected, missing, or
-unverified Task result.
+Follow the helper's canonical `/prewalk:pw-status` or
+`/prewalk:pw-reconcile` direction. Only the bound SubagentStop marker can
+complete a native Claude route.

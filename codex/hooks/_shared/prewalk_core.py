@@ -299,6 +299,7 @@ V4_HANDOFF_REQUESTED = "handoff_requested"
 V4_EXECUTOR_RUNNING = "executor_running"
 V4_INCOMPLETE = "incomplete"
 V4_STALE = "stale"
+V4_DEFAULT_STALE_SECONDS = 24 * 60 * 60
 V4_PHASES = {
     V4_PLANNING,
     V4_CHECKPOINT_READY,
@@ -961,7 +962,7 @@ def revise_v4_checkpoint(
     state = loaded.state
     if state is None:
         return V4CheckpointResult(loaded.status, loaded.message)
-    if state.phase != V4_CHECKPOINT_READY:
+    if state.phase not in (V4_CHECKPOINT_READY, V4_INCOMPLETE):
         return V4CheckpointResult(
             "not_ready", f"Prewalk has no checkpoint ready to revise ({state.phase}).", state
         )
@@ -971,7 +972,7 @@ def revise_v4_checkpoint(
     revised = apply_v4_transition(
         store_file,
         root_session_id,
-        expected_phases=[V4_CHECKPOINT_READY],
+        expected_phases=[V4_CHECKPOINT_READY, V4_INCOMPLETE],
         target_phase=V4_PLANNING,
         event_id=event_id,
         updates={
@@ -979,6 +980,16 @@ def revise_v4_checkpoint(
             "verification_evidence": [],
             "verification_warning": "",
             "checkpoint_at": "",
+            "route_token": "",
+            "route_task_name": "",
+            "route_tool_use_id": "",
+            "executor_agent_id": "",
+            "route_requested_at": "",
+            "executor_started_at": "",
+            "launch_acknowledged": False,
+            "model_routing_proven": False,
+            "effort_routing_proven": False,
+            "last_error": "",
         },
     )
     instruction = (
@@ -1655,6 +1666,227 @@ def interrupt_v4_executor(
         updates={"last_error": normalized or "executor was interrupted"},
     )
     return V4RouteDecision(True, False, incomplete.last_error, incomplete)
+
+
+def detect_v4_stale(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    now: str | None = None,
+    timeout_seconds: int = V4_DEFAULT_STALE_SECONDS,
+    workspace_id: str = "",
+) -> V4CheckpointResult:
+    """Mark an overdue ambiguous route stale without clearing or stopping it."""
+    loaded = load_v4_state(store_file, root_session_id, workspace_id=workspace_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase == V4_STALE:
+        return V4CheckpointResult("stale", state.last_error, state)
+    if state.phase not in (V4_HANDOFF_REQUESTED, V4_EXECUTOR_RUNNING):
+        return V4CheckpointResult(state.phase, "No active route can become stale.", state)
+    if timeout_seconds < 1:
+        return V4CheckpointResult(
+            "invalid_timeout", "The stale timeout must be positive.", state
+        )
+    checked_at = now or utc_timestamp()
+    checked = _parse_v4_timestamp(checked_at, "stale check time")
+    reference_name = (
+        "executor_started_at" if state.phase == V4_EXECUTOR_RUNNING else "route_requested_at"
+    )
+    reference_value = getattr(state, reference_name)
+    reference = _parse_v4_timestamp(reference_value, reference_name)
+    elapsed = (checked - reference).total_seconds()
+    if elapsed < timeout_seconds:
+        return V4CheckpointResult(
+            "active", f"Route liveness is not stale ({int(max(elapsed, 0))}s elapsed).", state
+        )
+    reason = (
+        f"No matching native lifecycle event was observed for {int(elapsed)}s; "
+        "executor liveness is unknown and no agent was stopped or cleared."
+    )
+    stale = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[state.phase],
+        target_phase=V4_STALE,
+        event_id=_v4_content_event_id(
+            "route-stale", root_session_id, state.route_attempt, reference_value, timeout_seconds
+        ),
+        now=checked_at,
+        updates={"last_error": reason},
+    )
+    return V4CheckpointResult("stale", reason, stale)
+
+
+def prepare_v4_retry(
+    store_file: str | os.PathLike[str], root_session_id: str
+) -> V4CheckpointResult:
+    """Reset only a proven-incomplete route while retaining task 1 and its packet."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase == V4_CHECKPOINT_READY:
+        return V4CheckpointResult("checkpoint_ready", "Prewalk retry is already prepared.", state)
+    if state.phase == V4_HANDOFF_REQUESTED:
+        return V4CheckpointResult(
+            "handoff_requested",
+            "A route is already pending; reuse it rather than creating another executor.",
+            state,
+        )
+    if state.phase in (V4_EXECUTOR_RUNNING, V4_STALE):
+        return V4CheckpointResult(
+            "agent_may_be_running",
+            "Prewalk will not retry while an executor may still be running; run pw-reconcile first.",
+            state,
+        )
+    if state.phase != V4_INCOMPLETE:
+        return V4CheckpointResult(
+            "not_retryable", f"Prewalk cannot retry from {state.phase}.", state
+        )
+    prepared = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_INCOMPLETE],
+        target_phase=V4_CHECKPOINT_READY,
+        event_id=f"route-retry:{root_session_id}:{state.route_attempt}:{state.revision}",
+        updates={
+            "route_token": "",
+            "route_task_name": "",
+            "route_tool_use_id": "",
+            "executor_agent_id": "",
+            "route_requested_at": "",
+            "executor_started_at": "",
+            "launch_acknowledged": False,
+            "model_routing_proven": False,
+            "effort_routing_proven": False,
+            "last_error": "",
+        },
+    )
+    return V4CheckpointResult(
+        "checkpoint_ready",
+        "Prewalk retained task 1 and the exact packet; request one new executor route.",
+        prepared,
+    )
+
+
+def reconcile_v4_route(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    confirmed_not_running: bool,
+    detail: str = "",
+) -> V4CheckpointResult:
+    """Resolve an ambiguous route only after explicit external liveness proof."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase == V4_INCOMPLETE:
+        return V4CheckpointResult(
+            "incomplete", "Prewalk route is already reconciled; run pw-retry.", state
+        )
+    if state.phase not in (V4_HANDOFF_REQUESTED, V4_EXECUTOR_RUNNING, V4_STALE):
+        return V4CheckpointResult(
+            "not_ambiguous", f"Prewalk has no ambiguous route to reconcile ({state.phase}).", state
+        )
+    if not confirmed_not_running:
+        return V4CheckpointResult(
+            "confirmation_required",
+            "Confirm through the native runtime or explicit user acknowledgement that the bound "
+            "agent is not running. Prewalk did not change state or terminate an agent.",
+            state,
+        )
+    reason = detail.strip() or "native runtime confirmed the prior executor is not running"
+    incomplete = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[state.phase],
+        target_phase=V4_INCOMPLETE,
+        event_id=_v4_content_event_id(
+            "route-reconciled", root_session_id, state.route_attempt, state.executor_agent_id, reason
+        ),
+        updates={"last_error": reason},
+    )
+    return V4CheckpointResult(
+        "incomplete",
+        "Prewalk retained the checkpoint and marked the prior route incomplete; run pw-retry.",
+        incomplete,
+    )
+
+
+def _v4_command(host: str, name: str) -> str:
+    return f"/prewalk:{name}" if host == "claude" else f"$prewalk:{name}"
+
+
+def _short_status_text(value: str, limit: int = 180) -> str:
+    compact = " ".join((value or "").split())
+    return compact if len(compact) <= limit else compact[: limit - 3] + "..."
+
+
+def format_v4_status(loaded: V4LoadResult, *, host: str = "codex") -> str:
+    """Format one safe operational view without exposing packet or route token."""
+    state = loaded.state
+    if state is None:
+        next_name = loaded.next_command or "prewalk"
+        message = loaded.message or "No armed run exists for this root session."
+        return (
+            "prewalk v4: idle\n"
+            f"  state: {loaded.status}; detail: {_short_status_text(message)}\n"
+            f"  next: {_v4_command(host, next_name)}"
+        )
+
+    token_summary = (
+        "sha256:" + hashlib.sha256(state.route_token.encode("utf-8")).hexdigest()[:10]
+        if state.route_token else "none"
+    )
+    if state.verification_evidence:
+        evidence = f"verified ({len(state.verification_evidence)} item(s))"
+    elif state.verification_warning:
+        evidence = "warning: " + _short_status_text(state.verification_warning)
+    else:
+        evidence = "not captured"
+    remaining = [todo for todo in state.todos if todo.open]
+    remaining_text = "; ".join(
+        f"{todo.id or index + 1}:{_short_status_text(todo.content, 80)}"
+        for index, todo in enumerate(remaining)
+    ) or "none"
+    next_name = {
+        V4_PLANNING: "pw-status",
+        V4_CHECKPOINT_READY: "pw-go",
+        V4_HANDOFF_REQUESTED: "pw-go" if not state.route_tool_use_id else "pw-status",
+        V4_EXECUTOR_RUNNING: "pw-status",
+        V4_INCOMPLETE: "pw-retry",
+        V4_STALE: "pw-reconcile",
+    }[state.phase]
+    actions = {
+        V4_PLANNING: "continue task 1 and root Stop; disarm=pw-off",
+        V4_CHECKPOINT_READY: "route=pw-go; revise=pw-revise; disarm=pw-off",
+        V4_HANDOFF_REQUESTED: "reuse pending route; reconcile only after interruption; disarm=pw-off",
+        V4_EXECUTOR_RUNNING: "wait; reconcile only after proving agent stopped; disarm does not stop it",
+        V4_INCOMPLETE: "retry=pw-retry; revise=pw-revise; disarm=pw-off",
+        V4_STALE: "reconcile=pw-reconcile after liveness proof; disarm does not stop it",
+    }[state.phase]
+    return (
+        f"prewalk v4: {state.phase} [{state.preset}]\n"
+        f"  host: {state.host}; workspace: {state.workspace_id}\n"
+        f"  executor: model={state.executor_model or 'none'}; effort="
+        f"{state.executor_effort or 'host-default'}; handoff={state.handoff_mode}; "
+        f"routing_proven={'yes' if state.model_routing_proven else 'no'}\n"
+        f"  evidence: {evidence}\n"
+        f"  route: attempt={state.route_attempt}; token={token_summary}; task="
+        f"{'set' if state.route_task_name else 'none'}; tool={state.route_tool_use_id or 'none'}; "
+        f"launch_ack={'yes' if state.launch_acknowledged else 'no'}\n"
+        f"  bound_agent: {state.executor_agent_id or 'none'}\n"
+        f"  timestamps: created={state.created_at}; checkpoint={state.checkpoint_at or 'none'}; "
+        f"route={state.route_requested_at or 'none'}; executor={state.executor_started_at or 'none'}; "
+        f"last_event={state.last_event_at}\n"
+        f"  remaining({len(remaining)}): {remaining_text}\n"
+        f"  last_error: {_short_status_text(state.last_error) or 'none'}\n"
+        f"  actions: {actions}\n"
+        f"  next: {_v4_command(state.host, next_name)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2405,31 +2637,19 @@ def on_fast_handoff(
 # ---------------------------------------------------------------------------
 
 def describe(store_file: str | os.PathLike[str], session_id: str) -> str:
-    state = load_state(store_file, session_id)
-    if state is None:
-        return "prewalk: idle (no armed run in this session)."
-    return (
-        f"prewalk {VERSION}: {state.phase} [{state.preset}]\n"
-        f"  planner: active root session (not changed by Prewalk)\n"
-        f"  executor configured: {state.executor_model}; effort requested: "
-        f"{state.executor_thinking or 'host-default'}\n"
-        f"  handoff_mode: {state.handoff_mode}; require_model_routing: "
-        f"{'yes' if state.require_model_routing else 'no'}; attempts: {state.handoff_attempts}; "
-        f"routed: {'yes' if state.handoff_routed else 'no'}\n"
-        f"  route_tool: {state.handoff_tool_use_id or 'none'}; executor_agent: "
-        f"{state.executor_agent_id or 'none'}; launch_ack: "
-        f"{'yes' if state.handoff_launch_acknowledged else 'no'}\n"
-        f"  fast: {'yes' if state.auto_swap else 'no'}; evidence: {state.checkpoint_evidence or 'none'}; "
-        f"todos_remaining: {state.todos_remaining}; last_error: {state.last_handoff_error or 'none'}"
-    )
+    loaded = load_v4_state(store_file, session_id)
+    host = loaded.state.host if loaded.state is not None else "codex"
+    return format_v4_status(loaded, host=host)
 
 
 def disarm(store_file: str | os.PathLike[str], session_id: str) -> str:
-    state = load_state(store_file, session_id)
-    if state is None:
+    if session_id not in _read_all(store_file):
         return "prewalk was not armed for this session."
     clear_state(store_file, session_id)
-    return "prewalk disarmed. The active root session and model were unchanged."
+    return (
+        "prewalk disarmed. State was cleared explicitly; no agent was stopped and "
+        "the workspace, todos, and active root model were unchanged."
+    )
 
 
 # ---------------------------------------------------------------------------
