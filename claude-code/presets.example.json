@@ -1,58 +1,20 @@
 {
-  "_comment": "Copy to ~/.claude/prewalk-presets.json and edit. Each preset pins a planner (frontier) and executor (cheap) model. Style A: /model switches mid-session so the executor inherits the full trajectory. Model aliases here use Claude Code aliases (opus/sonnet/haiku/fable) or full ids; change to what your install resolves. The default preset is 'code-value'.",
-
+  "_comment": "Copy to ~/.claude/prewalk-presets.json. The active Claude session is the planner; presets configure only the executor. Claude aliases below are native catalog examples. Dynamic per-subagent effort is not currently supported.",
   "default": "code-value",
-
   "presets": {
     "code-value": {
-      "description": "Balanced: Fable/Opus plans, Haiku executes",
-      "planner": "opus",
-      "executor": "haiku",
-      "planner_thinking": "high",
-      "executor_thinking": "low",
-      "handoff_mode": "spawn",
-      "require_model_routing": true,
-      "max_todos": 12
-    },
-    "code-max": {
-      "description": "Top quality: Fable plans at high, Sonnet executes",
-      "planner": "fable",
+      "description": "Balanced native Claude executor",
       "executor": "sonnet",
-      "planner_thinking": "high",
-      "executor_thinking": "medium",
       "handoff_mode": "spawn",
       "require_model_routing": true,
       "max_todos": 12
     },
-    "frontend": {
-      "description": "Vision-capable executor for screenshot-driven UI iteration",
-      "planner": "fable",
-      "executor": "sonnet",
-      "planner_thinking": "high",
-      "executor_thinking": "medium",
-      "handoff_mode": "spawn",
-      "require_model_routing": true,
-      "max_todos": 12
-    },
-    "backend": {
-      "description": "Text-only backend/systems; cheap Haiku executor",
-      "planner": "opus",
+    "budget": {
+      "description": "Lower-cost native Claude executor",
       "executor": "haiku",
-      "planner_thinking": "high",
-      "executor_thinking": "low",
       "handoff_mode": "spawn",
       "require_model_routing": true,
       "max_todos": 10
-    },
-    "speed": {
-      "description": "Same model, effort drop only — fastest handoff",
-      "planner": "sonnet",
-      "executor": "haiku",
-      "planner_thinking": "medium",
-      "executor_thinking": "low",
-      "handoff_mode": "spawn",
-      "require_model_routing": true,
-      "max_todos": 8
     }
   }
 }

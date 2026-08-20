@@ -13,8 +13,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_arm.py" arm "$CLAUDE_SESSION_ID" "$ARGUMEN
 
 Options must precede task text: `--preset <name>` selects a preset and
 `--fast` enables automatic handoff after validation (`--no-pause` is a legacy
-alias). Follow the reported planner model and
-thinking setting only through controls the host actually supports.
+alias). The active root session is the planner; Prewalk never changes it.
 
 If the task is clearly one or two small edits, finish it directly. Otherwise:
 

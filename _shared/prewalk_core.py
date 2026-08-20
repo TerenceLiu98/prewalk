@@ -739,21 +739,46 @@ def apply_v4_transition(
 @dataclass
 class Preset:
     name: str
-    planner_model: str
     executor_model: str
     description: str = ""
     max_todos: int = DEFAULT_MAX_TODOS
-    planner_thinking: str = ""
-    executor_thinking: str = ""
+    executor_effort: str = ""
     handoff_mode: str = "auto"
     require_model_routing: bool = True
+    deprecation_warnings: list[str] = field(default_factory=list)
+
+    @property
+    def planner_model(self) -> str:
+        """Compatibility view for the 0.3 adapter during the v4 rollout."""
+        return "active-session"
+
+    @property
+    def planner_thinking(self) -> str:
+        return ""
+
+    @property
+    def executor_thinking(self) -> str:
+        return self.executor_effort
+
+
+def _preset_warnings(raw: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    if "planner" in raw:
+        warnings.append("planner is deprecated and ignored; the active root session is the planner")
+    if "planner_thinking" in raw:
+        warnings.append("planner_thinking is deprecated and ignored")
+    if "executor_thinking" in raw and "executor_effort" not in raw:
+        warnings.append("executor_thinking is deprecated; use executor_effort")
+    return warnings
 
 
 def load_presets_json(path: str | os.PathLike[str]) -> dict[str, Preset]:
     """Claude Code presets live in JSON. Schema:
     { "default": "code-value",
-      "presets": { "<name>": { "planner": "...", "executor": "...", "description": "...",
-                               "max_todos": 12 }, ... } }
+      "presets": { "<name>": { "executor": "...", "description": "...",
+                               "max_todos": 12, "executor_effort": "..." }, ... } }
+
+    Legacy planner fields are accepted only to produce deprecation warnings.
     """
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -764,20 +789,20 @@ def load_presets_json(path: str | os.PathLike[str]) -> dict[str, Preset]:
     for name, raw in (data.get("presets") or {}).items():
         if not isinstance(raw, dict):
             continue
-        planner = str(raw.get("planner") or "").strip()
         executor = str(raw.get("executor") or "").strip()
-        if not planner or not executor:
+        if not executor:
             continue
         out[name] = Preset(
             name=name,
-            planner_model=planner,
             executor_model=executor,
             description=str(raw.get("description") or ""),
             max_todos=int(raw.get("max_todos") or DEFAULT_MAX_TODOS),
-            planner_thinking=str(raw.get("planner_thinking") or "").strip(),
-            executor_thinking=str(raw.get("executor_thinking") or "").strip(),
+            executor_effort=str(
+                raw.get("executor_effort") or raw.get("executor_thinking") or ""
+            ).strip(),
             handoff_mode=_handoff_mode(raw.get("handoff_mode")),
             require_model_routing=bool(raw.get("require_model_routing", True)),
+            deprecation_warnings=_preset_warnings(raw),
         )
     return out
 
@@ -794,8 +819,8 @@ def load_presets_toml(path: str | os.PathLike[str]) -> dict[str, Preset]:
     default_preset = "code-value"
     [presets.code-value]
     description = "..."
-    planner = "gpt-5.6-sol"      # optionally "model @ effort"
-    executor = "gpt-5.6-luna"
+    executor = "gpt-5.6-terra"
+    executor_effort = "medium"
     max_todos = 12
     """
     try:
@@ -833,21 +858,123 @@ def load_presets_toml(path: str | os.PathLike[str]) -> dict[str, Preset]:
 
 
 def _flush_preset(out: dict[str, Preset], name: str, bucket: dict[str, Any]) -> None:
-    planner = str(bucket.get("planner") or "").strip()
     executor = str(bucket.get("executor") or "").strip()
-    if not planner or not executor:
+    if not executor:
         return
     out[name] = Preset(
         name=name,
-        planner_model=planner,
         executor_model=executor,
         description=str(bucket.get("description") or ""),
         max_todos=int(bucket.get("max_todos") or DEFAULT_MAX_TODOS),
-        planner_thinking=str(bucket.get("planner_thinking") or "").strip(),
-        executor_thinking=str(bucket.get("executor_thinking") or "").strip(),
+        executor_effort=str(
+            bucket.get("executor_effort") or bucket.get("executor_thinking") or ""
+        ).strip(),
         handoff_mode=_handoff_mode(bucket.get("handoff_mode")),
         require_model_routing=bool(bucket.get("require_model_routing", True)),
+        deprecation_warnings=_preset_warnings(bucket),
     )
+
+
+@dataclass(frozen=True)
+class CapabilityReport:
+    host: str
+    configured_model: str
+    configured_effort: str
+    model_requested: str
+    model_proven: str
+    effort_requested: str
+    effort_proven: str
+    routing_allowed: bool
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+def evaluate_capabilities(
+    preset: Preset,
+    host: str,
+    *,
+    schema_fields: Iterable[str] | None = None,
+    environment: dict[str, str] | None = None,
+) -> CapabilityReport:
+    """Separate configured controls from requested and runtime-proven controls."""
+    fields = None if schema_fields is None else set(schema_fields)
+    warnings = list(preset.deprecation_warnings)
+    errors: list[str] = []
+    configured_effort = preset.executor_effort or "host-default"
+
+    if host == "codex":
+        if fields is None:
+            model_requested = "pending-live-schema"
+            model_proven = "unproven"
+            effort_requested = "pending-live-schema" if preset.executor_effort else "no"
+            effort_proven = "unproven" if preset.executor_effort else "not-configured"
+        else:
+            model_requested = "yes" if "model" in fields else "no"
+            model_proven = "supported" if "model" in fields else "unsupported"
+            effort_requested = (
+                "yes" if preset.executor_effort and "reasoning_effort" in fields else "no"
+            )
+            effort_proven = (
+                "supported" if preset.executor_effort and "reasoning_effort" in fields
+                else "unsupported" if preset.executor_effort
+                else "not-configured"
+            )
+            if preset.require_model_routing and "model" not in fields:
+                errors.append("live spawn_agent schema cannot prove configured model routing")
+        return CapabilityReport(
+            host=host,
+            configured_model=preset.executor_model,
+            configured_effort=configured_effort,
+            model_requested=model_requested,
+            model_proven=model_proven,
+            effort_requested=effort_requested,
+            effort_proven=effort_proven,
+            routing_allowed=not errors,
+            warnings=tuple(warnings),
+            errors=tuple(errors),
+        )
+
+    if host != "claude":
+        raise ValueError(f"unsupported host {host!r}")
+    env = environment if environment is not None else os.environ
+    override = env.get("CLAUDE_CODE_SUBAGENT_MODEL", "").strip()
+    model_proven = "hook-rewrite"
+    if override and override != preset.executor_model:
+        detail = (
+            f"CLAUDE_CODE_SUBAGENT_MODEL={override!r} conflicts with configured executor "
+            f"{preset.executor_model!r}"
+        )
+        if preset.require_model_routing:
+            errors.append(detail)
+            model_proven = "override-conflict"
+        else:
+            warnings.append(detail)
+            model_proven = "overridden"
+    if preset.executor_effort:
+        warnings.append("Claude does not expose a dynamic per-subagent effort control")
+    return CapabilityReport(
+        host=host,
+        configured_model=preset.executor_model,
+        configured_effort=configured_effort,
+        model_requested="yes",
+        model_proven=model_proven,
+        effort_requested="no",
+        effort_proven="unsupported" if preset.executor_effort else "not-configured",
+        routing_allowed=not errors,
+        warnings=tuple(warnings),
+        errors=tuple(errors),
+    )
+
+
+def format_capability_report(report: CapabilityReport) -> str:
+    lines = [
+        f"  configured: executor={report.configured_model}; effort={report.configured_effort}",
+        f"  requested : model={report.model_requested}; effort={report.effort_requested}",
+        f"  proven    : model={report.model_proven}; effort={report.effort_proven}",
+    ]
+    lines.extend(f"  warning   : {warning}" for warning in report.warnings)
+    lines.extend(f"  error     : {error}" for error in report.errors)
+    return "\n".join(lines)
 
 
 def _handoff_mode(value: Any) -> str:
@@ -1017,13 +1144,12 @@ def on_todos_changed(
     remaining = count_remaining(todos)
     state.todos_remaining = remaining
 
-    # Executor completion: all real todos done. Clear + tell user to restore.
+    # Executor completion: all real todos done. The active root model never changed.
     if state.phase == EXECUTOR:
         if remaining == 0:
             clear_state(store_file, session_id)
             return HookAction(
-                system_message="prewalk: all todos completed ✅ — run `/model " + state.original_model
-                               + "` to restore your planner model.",
+                system_message="prewalk: all todos completed; the active root session was unchanged.",
             )
         save_state(store_file, state)
         return None
@@ -1241,9 +1367,10 @@ def on_executor_result(
     if state.phase != EXECUTOR:
         return HookAction(additional_context="Prewalk cannot record an executor result before handoff confirmation.")
     if complete:
-        planner = state.original_model
         clear_state(store_file, session_id)
-        return HookAction(system_message=f"prewalk: executor completed all work. Restore `/model {planner}` if needed.")
+        return HookAction(
+            system_message="prewalk: executor completed all work; the active root session was unchanged."
+        )
     state.phase = PAUSED
     state.handoff_done = False
     state.handoff_routed = False
@@ -1358,8 +1485,9 @@ def describe(store_file: str | os.PathLike[str], session_id: str) -> str:
         return "prewalk: idle (no armed run in this session)."
     return (
         f"prewalk {VERSION}: {state.phase} [{state.preset}]\n"
-        f"  planner: {state.original_model} ({state.planner_thinking or 'default'})"
-        f"  ->  executor: {state.executor_model} ({state.executor_thinking or 'default'})\n"
+        f"  planner: active root session (not changed by Prewalk)\n"
+        f"  executor configured: {state.executor_model}; effort requested: "
+        f"{state.executor_thinking or 'host-default'}\n"
         f"  handoff_mode: {state.handoff_mode}; require_model_routing: "
         f"{'yes' if state.require_model_routing else 'no'}; attempts: {state.handoff_attempts}; "
         f"routed: {'yes' if state.handoff_routed else 'no'}\n"
@@ -1376,7 +1504,7 @@ def disarm(store_file: str | os.PathLike[str], session_id: str) -> str:
     if state is None:
         return "prewalk was not armed for this session."
     clear_state(store_file, session_id)
-    return f"prewalk disarmed. Restore your model with `/model {state.original_model}` if needed."
+    return "prewalk disarmed. The active root session and model were unchanged."
 
 
 # ---------------------------------------------------------------------------

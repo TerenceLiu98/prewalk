@@ -80,8 +80,12 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
             "codex/presets.example.toml there first. Falling back to built-in defaults.",
             file=sys.stderr,
         )
-        preset = core.Preset("default", "gpt-5.6-sol", "gpt-5.6-luna", "built-in fallback",
-                             core.DEFAULT_MAX_TODOS)
+        preset = core.Preset(
+            name="default",
+            executor_model="gpt-5.6-terra",
+            description="built-in fallback",
+            max_todos=core.DEFAULT_MAX_TODOS,
+        )
     else:
         name = preset_name or core.default_preset_toml(presets_path)
         preset = presets.get(name) or next(iter(presets.values()))
@@ -89,12 +93,11 @@ def cmd_arm(session_id: str, rest: list[str]) -> int:
 
     core.start_run(_common.store_file(), session_id, preset, auto_swap=auto_swap)
     print(f"prewalk ARMED  [{preset.name}]  auto_swap={auto_swap}")
-    print(f"  planner : {preset.planner_model}  thinking={preset.planner_thinking or 'default'}")
-    print(f"  executor: {preset.executor_model}  thinking={preset.executor_thinking or 'default'}")
+    print("  planner : active root session (Prewalk does not change it)")
     print(f"  handoff : {preset.handoff_mode}  require_model_routing={preset.require_model_routing}")
+    print(core.format_capability_report(core.evaluate_capabilities(preset, "codex")))
     print()
-    print("Switch this session to the planner now by running: /model " + preset.planner_model)
-    print("Then follow the frontier protocol from the $prewalk skill.")
+    print("Continue in this active session and follow $prewalk:prewalk.")
     return 0
 
 
@@ -154,7 +157,11 @@ def cmd_doctor(given_session_id: str) -> int:
     check(manifest_ok, "hook manifest", str(manifest))
     store_parent = Path(_common.store_file()).parent
     check(store_parent.is_dir() and os.access(store_parent, os.W_OK), "state directory", str(store_parent))
-    print("WARN  model routing: inspect the runtime spawn_agent schema; hooks cannot prove model support")
+    preset = (
+        presets.get(core.default_preset_toml(presets_path)) or next(iter(presets.values()))
+        if presets else core.Preset("default", "gpt-5.6-terra")
+    )
+    print(core.format_capability_report(core.evaluate_capabilities(preset, "codex")))
     return 1 if failures else 0
 
 
@@ -179,6 +186,13 @@ def main() -> int:
         return cmd_arm(session_id, rest)
     if sub == "status":
         print(core.describe(store, session_id))
+        state = core.load_state(store, session_id)
+        if state is not None:
+            presets = core.load_presets_toml(_common.presets_file())
+            preset = presets.get(state.preset) or core.Preset(
+                state.preset, state.executor_model, executor_effort=state.executor_thinking
+            )
+            print(core.format_capability_report(core.evaluate_capabilities(preset, "codex")))
         return 0
     if sub == "disarm":
         print(core.disarm(store, session_id))
