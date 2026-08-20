@@ -10,7 +10,7 @@
 - [x] Workflow smoke covers normal review, fast mode, failures, interruption, stale state, and recovery.
 - [x] Benchmark record/report sanity check passes without making performance claims.
 - [x] Core, manifest, marketplace, changelog, and migration-guide versions agree on 0.4.0.
-- [ ] Every issue and stacked PR in milestone 0.4.0 is complete and merged.
-- [ ] The parent epic checklist and both release milestones are complete.
-- [ ] Required CI jobs pass on the merged release commit.
+- [x] Every issue and stacked PR in milestone 0.4.0 is complete and merged.
+- [x] The parent epic checklist and both release milestones are complete.
+- [x] Required CI jobs pass on the merged release commit.
 - [ ] Tag `v0.4.0` only after every preceding release gate is complete.
