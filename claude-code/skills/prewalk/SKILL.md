@@ -1,6 +1,6 @@
 ---
 name: prewalk
-description: "Arm a prewalk run: explore and plan on a frontier model, land the first verified edit, then pause for an explicit executor handoff."
+description: "Arm a prewalk run: explore and plan in the root session, land the first verified edit, then persist a Stop checkpoint for handoff."
 ---
 
 # Prewalk
@@ -20,10 +20,9 @@ If the task is clearly one or two small edits, finish it directly. Otherwise:
 1. Explore the relevant entry points, configuration, tests, and existing patterns.
 2. Create at most the configured number of todos. Every real todo names concrete
    files or behavior and includes a test/build/verify/check criterion.
-3. Add a final `PAUSE for handoff` todo.
-4. Complete and verify only real task #1.
-5. Update the todo snapshot so task #1 is `completed` and the PAUSE item is present.
-6. Stop with this exact structured packet. Do not start task #2.
+3. Complete and verify only real task #1.
+4. Update the todo snapshot so task #1 is `completed`; keep only real work in it.
+5. Stop with this exact structured packet. Do not start task #2.
 
 ```text
 Goal:

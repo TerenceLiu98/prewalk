@@ -268,7 +268,9 @@ def load_state(store_file: str | os.PathLike[str], session_id: str) -> PrewalkSt
         return None
     with _store_lock(store_file):
         rec = _read_all(store_file).get(session_id)
-    return PrewalkState.from_dict(rec) if rec else None
+    if not rec or rec.get("schema_version") == V4_SCHEMA_VERSION:
+        return None
+    return PrewalkState.from_dict(rec)
 
 
 def save_state(store_file: str | os.PathLike[str], state: PrewalkState) -> None:
@@ -339,6 +341,7 @@ class V4State:
     max_todos: int = DEFAULT_MAX_TODOS
     handoff_mode: str = "auto"
     require_model_routing: bool = True
+    fast_mode: bool = False
     todos: list[Todo] = field(default_factory=list)
     packet: str = ""
     verification_evidence: list[str] = field(default_factory=list)
@@ -480,8 +483,10 @@ def validate_v4_state(state: V4State) -> None:
         or state.route_attempt < 0
     ):
         raise V4StateError("revision and route_attempt cannot be negative")
-    if not isinstance(state.require_model_routing, bool) or not isinstance(
-        state.launch_acknowledged, bool
+    if (
+        not isinstance(state.require_model_routing, bool)
+        or not isinstance(state.fast_mode, bool)
+        or not isinstance(state.launch_acknowledged, bool)
     ):
         raise V4StateError("v4 capability flags must be booleans")
     if not isinstance(state.processed_event_ids, list) or not all(
@@ -574,6 +579,39 @@ def create_v4_state(store_file: str | os.PathLike[str], state: V4State) -> None:
             raise V4StateError("a state record already exists for this root session")
         data[state.root_session_id] = state.to_dict()
         _write_all(store_file, data)
+
+
+def start_v4_run(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    workspace_root: str | os.PathLike[str],
+    host: str,
+    preset: "Preset",
+    *,
+    fast_mode: bool = False,
+    now: str | None = None,
+) -> V4State:
+    """Arm a schema-4 run, replacing only this root session's prior record."""
+    state = new_v4_state(
+        root_session_id,
+        workspace_identity(workspace_root),
+        host,
+        now=now,
+        preset=preset.name,
+        executor_model=preset.executor_model,
+        executor_effort=preset.executor_effort,
+        max_todos=preset.max_todos,
+        handoff_mode=preset.handoff_mode,
+        require_model_routing=preset.require_model_routing,
+        fast_mode=fast_mode,
+    )
+    with _store_lock(store_file):
+        data, status = _read_all_with_status(store_file)
+        if status == "corrupt_store":
+            data = {}
+        data[root_session_id] = state.to_dict()
+        _write_all(store_file, data)
+    return state
 
 
 def load_v4_state(
@@ -729,6 +767,222 @@ def apply_v4_transition(
         data[root_session_id] = state.to_dict()
         _write_all(store_file, data)
         return state
+
+
+@dataclass(frozen=True)
+class V4CheckpointResult:
+    status: str
+    message: str
+    state: V4State | None = None
+
+
+def _v4_content_event_id(kind: str, root_session_id: str, *values: Any) -> str:
+    encoded = json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+    return f"{kind}:{root_session_id}:{digest}"
+
+
+def record_v4_todos(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    todos: list[Todo],
+    *,
+    event_id: str = "",
+) -> V4CheckpointResult:
+    """Persist a complete real-work snapshot without creating a checkpoint."""
+    loaded = load_v4_state(store_file, root_session_id)
+    if loaded.state is None or loaded.state.phase != V4_PLANNING:
+        return V4CheckpointResult(loaded.status, loaded.message, loaded.state)
+    if any(todo.is_pause for todo in todos):
+        return V4CheckpointResult(
+            "invalid_todos", "Prewalk v4 plans contain real work only; remove the PAUSE todo."
+        )
+    error = validate_todo_list(todos, loaded.state.max_todos)
+    if error:
+        return V4CheckpointResult("invalid_todos", error)
+    transition_id = event_id.strip() or _v4_content_event_id(
+        "todos", root_session_id, [asdict(todo) for todo in todos]
+    )
+    state = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_PLANNING],
+        target_phase=V4_PLANNING,
+        event_id=transition_id,
+        updates={"todos": todos},
+    )
+    return V4CheckpointResult("recorded", "Prewalk recorded the real todo snapshot.", state)
+
+
+def _packet_section(packet: str, heading: str) -> str:
+    heading_names = "|".join(re.escape(item) for item in V4_PACKET_HEADINGS)
+    match = re.search(
+        rf"(?mis)^\s*(?:#{{1,6}}\s*)?{re.escape(heading)}\s*:?\s*(.*?)"
+        rf"(?=^\s*(?:#{{1,6}}\s*)?(?:{heading_names})\s*:?(?:\s|$)|\Z)",
+        packet,
+    )
+    return match.group(1).strip() if match else ""
+
+
+_VERIFICATION_WARNING_RE = re.compile(
+    r"\b(?:warning|not run|not available|unavailable|unable to|could not|no (?:test|check|verification))\b",
+    re.I,
+)
+
+
+def packet_verification(packet: str) -> tuple[list[str], str]:
+    """Return exact verification evidence, or an explicit warning, from a packet."""
+    section = _packet_section(packet, "Verification Already Run")
+    if not section:
+        return [], ""
+    if _VERIFICATION_WARNING_RE.search(section):
+        return [], section
+    evidence = [line.strip(" -*\t") for line in section.splitlines() if line.strip(" -*\t")]
+    return evidence, ""
+
+
+def capture_v4_checkpoint(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    packet: str,
+    todos: list[Todo] | None = None,
+    event_id: str = "",
+    now: str | None = None,
+) -> V4CheckpointResult:
+    """Validate one root Stop event and durably capture its exact assistant packet."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase == V4_CHECKPOINT_READY:
+        return V4CheckpointResult("checkpoint_ready", "Prewalk checkpoint is already ready.", state)
+    if state.phase != V4_PLANNING:
+        return V4CheckpointResult(
+            "not_planning", f"Prewalk cannot capture a checkpoint from {state.phase}.", state
+        )
+
+    snapshot = list(todos) if todos else list(state.todos)
+    if not snapshot:
+        if packet.strip() and len(_missing_packet_headings(packet)) < len(V4_PACKET_HEADINGS):
+            return V4CheckpointResult(
+                "missing_todos",
+                "Prewalk cannot capture a handoff packet without a complete real todo snapshot.",
+            )
+        clear_state(store_file, root_session_id)
+        return V4CheckpointResult(
+            "trivial", "prewalk: trivial task; no handoff checkpoint was created."
+        )
+    if any(todo.is_pause for todo in snapshot):
+        return V4CheckpointResult(
+            "invalid_todos", "Prewalk v4 plans contain real work only; remove the PAUSE todo."
+        )
+    error = validate_todo_list(snapshot, state.max_todos)
+    if error:
+        return V4CheckpointResult("invalid_todos", error)
+    if snapshot[0].status != "completed":
+        return V4CheckpointResult(
+            "incomplete_task_one", "Prewalk task #1 must be completed before checkpoint capture."
+        )
+    remaining = count_remaining(snapshot)
+    if remaining == 0:
+        clear_state(store_file, root_session_id)
+        return V4CheckpointResult("complete", NO_HANDOFF_NEEDED)
+    if remaining == 1:
+        clear_state(store_file, root_session_id)
+        return V4CheckpointResult("one_remaining", ONE_LEFT_HINT)
+
+    missing = _missing_packet_headings(packet)
+    if missing:
+        return V4CheckpointResult(
+            "invalid_packet", "Prewalk checkpoint packet is missing headings: " + ", ".join(missing)
+        )
+    evidence, warning = packet_verification(packet)
+    if not evidence and not warning:
+        return V4CheckpointResult(
+            "missing_evidence",
+            "Prewalk checkpoint requires verification evidence or an explicit verification warning.",
+        )
+    timestamp = now or utc_timestamp()
+    transition_id = event_id.strip() or _v4_content_event_id(
+        "root-stop", root_session_id, [asdict(todo) for todo in snapshot], packet
+    )
+    try:
+        checkpoint = apply_v4_transition(
+            store_file,
+            root_session_id,
+            expected_phases=[V4_PLANNING],
+            target_phase=V4_CHECKPOINT_READY,
+            event_id=transition_id,
+            now=timestamp,
+            updates={
+                "todos": snapshot,
+                "packet": packet,
+                "verification_evidence": evidence,
+                "verification_warning": warning,
+                "checkpoint_at": timestamp,
+            },
+        )
+    except V4StateError as exc:
+        return V4CheckpointResult("invalid_checkpoint", str(exc))
+    return V4CheckpointResult(
+        "checkpoint_ready",
+        "prewalk: checkpoint ready; run `pw-go` to hand off or `pw-revise` to revise.",
+        checkpoint,
+    )
+
+
+def v4_handoff_context(
+    store_file: str | os.PathLike[str], root_session_id: str
+) -> V4CheckpointResult:
+    """Load the durable packet used by host-specific routing after resume."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase != V4_CHECKPOINT_READY:
+        return V4CheckpointResult(
+            "not_ready", f"Prewalk has no checkpoint ready for handoff ({state.phase}).", state
+        )
+    return V4CheckpointResult(
+        "checkpoint_ready", f"{HANDOFF_NOTE}\n\n{state.packet}", state
+    )
+
+
+def revise_v4_checkpoint(
+    store_file: str | os.PathLike[str], root_session_id: str, revision: str
+) -> V4CheckpointResult:
+    """Return a durable checkpoint to planning so root Stop can replace it."""
+    loaded = load_v4_state(store_file, root_session_id)
+    state = loaded.state
+    if state is None:
+        return V4CheckpointResult(loaded.status, loaded.message)
+    if state.phase != V4_CHECKPOINT_READY:
+        return V4CheckpointResult(
+            "not_ready", f"Prewalk has no checkpoint ready to revise ({state.phase}).", state
+        )
+    event_id = _v4_content_event_id(
+        "revise", root_session_id, state.revision, revision.strip()
+    )
+    revised = apply_v4_transition(
+        store_file,
+        root_session_id,
+        expected_phases=[V4_CHECKPOINT_READY],
+        target_phase=V4_PLANNING,
+        event_id=event_id,
+        updates={
+            "packet": "",
+            "verification_evidence": [],
+            "verification_warning": "",
+            "checkpoint_at": "",
+        },
+    )
+    instruction = (
+        f"PREWALK REVISION: update the plan accordingly: {revision.strip() or '(no detail given)'}. "
+        "Re-explore only what the revision affects, update only real work in the todo list, "
+        "re-verify task #1 if it changed, then stop with a replacement structured Handoff Packet."
+    )
+    return V4CheckpointResult("planning", instruction, revised)
 
 
 # ---------------------------------------------------------------------------
@@ -1013,7 +1267,7 @@ def frontier_prompt(max_todos: int = DEFAULT_MAX_TODOS) -> str:
     return (
         "You are running the PREWALK protocol, phase 1 (frontier planner). Follow it exactly.\n\n"
         "0. TRIVIALITY CHECK first: if the task clearly fits in one or two small edits, skip this "
-        "protocol entirely — complete the task directly, verify it, and stop. No todo list, no PAUSE item.\n"
+        "protocol entirely — complete the task directly, verify it, and stop without a todo list.\n"
         "1. EXPLORE the codebase deeply first: config files, entry points, every file relevant to the "
         "task; grep for existing patterns and conventions. Everything you read now is inherited by the "
         f"rest of the run — read what matters, once.\n"
@@ -1023,9 +1277,8 @@ def frontier_prompt(max_todos: int = DEFAULT_MAX_TODOS) -> str:
         "foundational task everything else builds on.\n"
         "3. Complete task #1 — and ONLY task #1. Make its edit(s), run its verification, and mark it "
         "completed only after the verification passes. Do not start #2.\n"
-        "4. Add a final todo item whose content starts with `⏸️ PAUSE` (if you cannot produce the emoji, "
-        "start the item with `PAUSE` in uppercase, or write `[PAUSE]`), set it as in_progress, then STOP. "
-        "End with a structured handoff packet using these exact headings: Goal, Files Read, Constraints "
+        "4. Leave only real work in the todo list, then STOP. End with a structured handoff packet "
+        "using these exact headings: Goal, Files Read, Constraints "
         "And Existing Patterns, Full Todo List, Task 1 Changes, Verification Already Run, Remaining Work, "
         "and Risks / Do Not Repeat. Keep it concise but complete; do not compress it to 3–5 lines.\n\n"
         "Budget: keep this phase compact (~7–10 exploration steps). If you cannot converge on a plan, "

@@ -38,17 +38,14 @@ def main() -> int:
     store = _common.store_file()
 
     if sub == "go":
-        action = core.on_pw_go(store, session_id, host="codex")
-        print(action.additional_context or action.system_message)
-        if action.system_message:
-            print()
-            print(action.system_message)
+        result = core.v4_handoff_context(store, session_id)
+        print(result.message or "There is no active prewalk checkpoint in this session.")
         return 0
 
     if sub == "revise":
         revision = " ".join(sys.argv[3:]).strip()
-        action = core.on_pw_revise(store, session_id, revision)
-        print(action.additional_context or action.system_message)
+        result = core.revise_v4_checkpoint(store, session_id, revision)
+        print(result.message or "There is no active prewalk checkpoint to revise.")
         return 0
 
     if sub in ("confirm", "resume"):

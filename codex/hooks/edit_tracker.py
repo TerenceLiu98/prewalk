@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Codex prewalk hook (v0.3) — PostToolUse mutation observer.
-
-When the frontier model lands its first successful edit, mark the run
-checkpoint-ready. After that point, `/pw-go` can hand off to the executor
-subagent.
+"""Codex PostToolUse mutation observer.
 
 This replaces the old edit_gate (which blocked edits before a todo existed and
 disarmed on a 2nd violation — that design enraged the model into bypassing
@@ -29,17 +25,9 @@ def main() -> int:
     payload = _common.read_input()
     sid = _common.session_id(payload)
     store = _common.store_file()
-    state = core.load_state(store, sid)
-    if state is None or state.phase != core.FRONTIER:
-        return 0  # not arming, or already past frontier
-
-    if not _common.normalize_mutation_success(payload):
-        return 0
-
-    if not state.first_edit_landed:
-        state.first_edit_landed = True
-        state.phase = "ready"  # frontier done its part; handoff-armed
-        core.save_state(store, state)
+    # V4 proves checkpoint readiness only from the root Stop snapshot and exact
+    # packet. Mutation events cannot independently advance the state machine.
+    core.load_v4_state(store, sid)
     return 0
 
 

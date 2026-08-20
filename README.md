@@ -4,8 +4,8 @@ Prewalk lets a strong planner do the expensive repository work, then gives a
 configured executor a verified starting point and a self-contained handoff:
 
 ```text
-planner:  explore -> capped plan -> task 1 + verification -> PAUSE
-                                                            |
+planner:  explore -> capped plan -> task 1 + verification -> root Stop checkpoint
+                                                                          |
                                               review or automatic fast mode
                                                             |
 executor: structured packet -> remaining tasks -> verify -> COMPLETE / INCOMPLETE
@@ -104,8 +104,9 @@ The handoff is accepted only when the snapshot contains:
 
 - a non-empty, capped todo list;
 - task 1 marked `completed`;
-- a `PAUSE for handoff` item;
-- remaining work worth delegating.
+- at least two remaining real tasks worth delegating;
+- the required packet headings and verification evidence, or an explicit
+  verification warning.
 
 The planner stops with a structured Handoff Packet:
 

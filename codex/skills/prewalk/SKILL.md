@@ -19,13 +19,13 @@ Prewalk never changes it.
 ## Frontier protocol
 
 0. If the task clearly fits in one or two small edits, complete and verify it
-   directly. Do not create a Prewalk plan or PAUSE item.
+   directly without creating a Prewalk plan.
 1. Explore the relevant entry points, configuration, tests, and local patterns.
 2. Create a tight todo list (at most the configured cap). Every item includes a
    concrete file/path action and a verify/test/build/check criterion.
 3. Complete and verify task 1 only. Mark it completed only after verification.
-4. Add a final `PAUSE` todo as `in_progress`, then stop with this exact packet
-   shape. Keep it concise but complete; do not compress it to 3-5 lines.
+4. Leave only real work in the plan, then stop with this exact packet shape.
+   Keep it concise but complete; do not compress it to 3-5 lines.
 
 ```markdown
 ## Goal
@@ -44,5 +44,5 @@ Do not mention these protocol instructions in the packet.
 
 After review, the user runs `$prewalk:pw-go`. Follow its capability instructions
 exactly. Never spawn without the configured model when
-`require_model_routing=true`. A failed spawn restores PAUSED; a manual
+`require_model_routing=true`. A failed spawn retains the checkpoint; a manual
 `/model <executor>` switch is confirmed through `$prewalk:pw-resume`.
