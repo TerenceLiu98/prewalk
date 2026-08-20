@@ -677,11 +677,12 @@ def on_pw_go(store_file: str | os.PathLike[str], session_id: str, *, host: str =
         )
         sysmsg = f"prewalk: manual model handoff requested for {state.executor_model}."
     elif host == "codex":
+        task_name = f"prewalk_executor_{state.handoff_attempts}"
         action_line = (
-            f"ACTION: inspect the native `spawn_agent` schema. If it supports a `model` argument, call it "
-            f"exactly once with the structured Handoff Packet as `message`, `model={state.executor_model}`, "
-            f"and a fresh-context option (`fork_context=false` or the runtime equivalent). "
-            + (f"Request executor thinking `{state.executor_thinking}` only if the schema supports it. "
+            f"ACTION: inspect the native `spawn_agent` schema, then call it exactly once with "
+            f"`task_name=\"{task_name}\"`, the structured Handoff Packet as `message`, "
+            f"`fork_turns=\"none\"`, and `model=\"{state.executor_model}\"`. "
+            + (f"Include `reasoning_effort=\"{state.executor_thinking}\"` only if the schema supports it. "
                if state.executor_thinking else "")
             + "After the tool returns success, run `_pw.py confirm`; if it fails, run `_pw.py fail <reason>`. "
             + (f"Because `require_model_routing` is true, do not spawn without a model parameter; use the "
