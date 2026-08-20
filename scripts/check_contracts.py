@@ -88,6 +88,22 @@ def validate_repo(root: Path) -> None:
         versions.add(codex_marketplace_version)
     if len(versions) != 1:
         raise ContractError(f"plugin and marketplace versions disagree: {sorted(versions)}")
+    release_version = next(iter(versions))
+    core_text = (root / "_shared" / "prewalk_core.py").read_text(encoding="utf-8")
+    core_match = re.search(r'^VERSION = "([^"]+)"$', core_text, re.MULTILINE)
+    if not core_match or core_match.group(1) != release_version:
+        raise ContractError(
+            f"shared core version does not match plugin version {release_version}"
+        )
+    release_documents = {
+        "changelog": root / "CHANGELOG.md",
+        "migration guide": root / "MIGRATION.md",
+        "release checklist": root / "RELEASE_CHECKLIST.md",
+    }
+    for label, path in release_documents.items():
+        text = path.read_text(encoding="utf-8")
+        if release_version not in text:
+            raise ContractError(f"{label} does not declare release {release_version}")
 
     short_command = re.compile(
         r"(?m)(?:^|`)(/(?:prewalk(?!:)|pw-(?:go|status|revise|off|doctor|reconcile|resume|retry))\b)"
@@ -96,6 +112,10 @@ def validate_repo(root: Path) -> None:
         match = short_command.search(path.read_text(encoding="utf-8"))
         if match:
             raise ContractError(f"{path}: unsupported unnamespaced command {match.group(1)}")
+
+    install_text = (root / "install.sh").read_text(encoding="utf-8")
+    if "planner/executor models" in install_text:
+        raise ContractError("installer must not claim that presets select the root planner")
 
     hooks = json.loads((root / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     for event in ("SubagentStart", "SubagentStop"):

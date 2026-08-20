@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- Keep the active Codex or Claude Code root session as the planner; presets now
+  configure only the executor model, effort request, and routing policy.
+- Replace model-authored pause sentinels with a validated root `Stop` checkpoint
+  containing real todos, verification evidence, and a durable handoff packet.
+- Persist a workspace- and session-scoped v4 state machine with atomic writes,
+  exact route tokens, executor identity binding, retry, reconcile, and stale
+  detection that never terminates an unknown agent.
+- Route Codex through native `spawn_agent` fields and Claude Code through a
+  token-bound Agent call plus native SubagentStart/SubagentStop lifecycle.
+- Add `pw-retry` and `pw-reconcile`, expanded doctor/status diagnostics, and a
+  Linux/macOS minimum/latest native CLI integration matrix.
+- Reset v3 state intentionally during upgrade. See [MIGRATION.md](MIGRATION.md).
+
 ## 0.3.1
 
 - Repair Claude plugin frontmatter and document all seven namespaced skills.
