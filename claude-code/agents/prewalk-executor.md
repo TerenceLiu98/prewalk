@@ -1,6 +1,6 @@
 ---
 name: prewalk-executor
-description: Prewalk executor — finishes the remaining todos in order on a cheaper model, given the frontier's handoff. Spawned automatically by the prewalk handoff hook; do not invoke directly.
+description: "Prewalk executor - finishes the remaining todos in order on a cheaper model after the frontier handoff."
 model: haiku
 tools: Read, Write, Edit, Glob, Grep, Bash, TodoWrite
 ---

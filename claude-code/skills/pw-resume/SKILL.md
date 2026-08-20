@@ -1,6 +1,6 @@
 ---
 name: pw-resume
-description: Recover a Claude Prewalk handoff only when a successful executor Task result was observed but its PostToolUse hook did not run.
+description: "Recover a Claude Prewalk handoff only when a successful executor Task result was observed but its PostToolUse hook did not run."
 ---
 
 # Prewalk Resume
