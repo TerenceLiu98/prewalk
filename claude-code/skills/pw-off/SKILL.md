@@ -1,6 +1,6 @@
 ---
 name: pw-off
-description: Disarm Prewalk for the current Claude Code session without changing files or todos.
+description: "Disarm Prewalk for the current Claude Code session without changing files or todos."
 ---
 
 # Prewalk Off

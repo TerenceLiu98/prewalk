@@ -1,6 +1,6 @@
 ---
 name: pw-doctor
-description: Diagnose the Prewalk installation, presets, hook manifest, state directory, and Claude Task routing setup.
+description: "Diagnose the Prewalk installation, presets, hook manifest, state directory, and Claude Task routing setup."
 ---
 
 # Prewalk Doctor

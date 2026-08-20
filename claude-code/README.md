@@ -21,21 +21,22 @@ Restart Claude Code. `~/.claude/prewalk-presets.json` is optional; copy
 ## Use
 
 ```text
-/prewalk <task>
-/pw-go
+/prewalk:prewalk <task>
+/prewalk:pw-go
 ```
 
-Use `/pw-revise <changes>` instead of `/pw-go` to change the plan. Operational
-skills are `/pw-status`, `/pw-off`, `/pw-doctor`, and recovery-only
-`/pw-resume`. `--fast` on `/prewalk` automatically requests the handoff at the
-validated Stop checkpoint.
+Use `/prewalk:pw-revise <changes>` instead of `/prewalk:pw-go` to change the
+plan. Operational skills are `/prewalk:pw-status`, `/prewalk:pw-off`,
+`/prewalk:pw-doctor`, and recovery-only `/prewalk:pw-resume`. `--fast` on
+`/prewalk:prewalk` automatically requests the handoff at the validated Stop
+checkpoint.
 
 ## Two-phase route
 
 Claude hooks cannot change the main session model. Prewalk therefore uses:
 
 ```text
-/pw-go
+/prewalk:pw-go
   -> state = handoff_requested
 Task PreToolUse
   -> updatedInput.model = executor

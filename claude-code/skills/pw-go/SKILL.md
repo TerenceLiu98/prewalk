@@ -1,6 +1,6 @@
 ---
 name: pw-go
-description: Request the reviewed prewalk handoff and spawn exactly one routed Claude Task for the remaining todos.
+description: "Request the reviewed prewalk handoff and spawn exactly one routed Claude Task for the remaining todos."
 ---
 
 # Prewalk Handoff

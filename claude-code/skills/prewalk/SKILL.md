@@ -1,6 +1,6 @@
 ---
 name: prewalk
-description: Arm a prewalk run: explore and plan on a frontier model, land the first verified edit, then pause for an explicit executor handoff.
+description: "Arm a prewalk run: explore and plan on a frontier model, land the first verified edit, then pause for an explicit executor handoff."
 ---
 
 # Prewalk
@@ -37,5 +37,5 @@ Remaining Work:
 Risks / Do Not Repeat:
 ```
 
-Do not claim that handoff occurred. `/pw-go` requests it; the Task result hook
-confirms it.
+Do not claim that handoff occurred. `/prewalk:pw-go` requests it; the Task
+result hook confirms it.

@@ -46,8 +46,8 @@ Restart Claude Code, then run:
 
 ```text
 /model opus
-/prewalk Add a settings page with tests
-/pw-go
+/prewalk:prewalk Add a settings page with tests
+/prewalk:pw-go
 ```
 
 Claude rewrites one Task to the configured executor in `PreToolUse`, but does
@@ -57,13 +57,13 @@ not confirm the handoff until the Task result returns successfully.
 
 | Action | Codex | Claude Code |
 | --- | --- | --- |
-| Start | `$prewalk:prewalk <task>` | `/prewalk <task>` |
-| Review and hand off | `$prewalk:pw-go` | `/pw-go` |
-| Revise the plan | `$prewalk:pw-revise <changes>` | `/pw-revise <changes>` |
-| Show state | `$prewalk:pw-status` | `/pw-status` |
-| Disarm | `$prewalk:pw-off` | `/pw-off` |
-| Diagnose setup | `$prewalk:pw-doctor` | `/pw-doctor` |
-| Resume manual/recovery handoff | `$prewalk:pw-resume` | `/pw-resume` |
+| Start | `$prewalk:prewalk <task>` | `/prewalk:prewalk <task>` |
+| Review and hand off | `$prewalk:pw-go` | `/prewalk:pw-go` |
+| Revise the plan | `$prewalk:pw-revise <changes>` | `/prewalk:pw-revise <changes>` |
+| Show state | `$prewalk:pw-status` | `/prewalk:pw-status` |
+| Disarm | `$prewalk:pw-off` | `/prewalk:pw-off` |
+| Diagnose setup | `$prewalk:pw-doctor` | `/prewalk:pw-doctor` |
+| Resume manual/recovery handoff | `$prewalk:pw-resume` | `/prewalk:pw-resume` |
 
 Clients may display shorter aliases or a leading slash, such as
 `/$prewalk:prewalk`. These refer to the same namespaced skills.
@@ -73,7 +73,7 @@ Add `--preset <name>` before task text to select a model pair. Add `--fast`
 
 ```text
 $prewalk:prewalk --preset backend --fast Optimize the job queue
-/prewalk --preset frontend Rebuild the dashboard and verify screenshots
+/prewalk:prewalk --preset frontend Rebuild the dashboard and verify screenshots
 ```
 
 Fast mode still validates the checkpoint and confirms routing. It only removes
