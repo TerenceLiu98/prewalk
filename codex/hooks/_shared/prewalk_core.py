@@ -17,6 +17,7 @@ adapter then hands a structured summary to a cheaper executor.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -25,6 +26,7 @@ import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -224,19 +226,25 @@ def _quarantine_corrupt_store(store_file: str | os.PathLike[str]) -> None:
         pass
 
 
-def _read_all(store_file: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
+def _read_all_with_status(
+    store_file: str | os.PathLike[str],
+) -> tuple[dict[str, dict[str, Any]], str]:
     try:
         with open(store_file, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return {}
+        return {}, "missing"
     except (json.JSONDecodeError, UnicodeDecodeError):
         _quarantine_corrupt_store(store_file)
-        return {}
+        return {}, "corrupt_store"
     if not isinstance(data, dict) or any(not isinstance(value, dict) for value in data.values()):
         _quarantine_corrupt_store(store_file)
-        return {}
-    return data
+        return {}, "corrupt_store"
+    return data, "ok"
+
+
+def _read_all(store_file: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
+    return _read_all_with_status(store_file)[0]
 
 
 def _write_all(store_file: str | os.PathLike[str], data: dict[str, dict[str, Any]]) -> None:
@@ -275,6 +283,452 @@ def clear_state(store_file: str | os.PathLike[str], session_id: str) -> None:
         data = _read_all(store_file)
         if data.pop(session_id, None) is not None:
             _write_all(store_file, data)
+
+
+# ---------------------------------------------------------------------------
+# V4 durable state. The 0.3 adapter state above remains available only while
+# the host integrations move to the ADR 0001 protocol issue by issue.
+# ---------------------------------------------------------------------------
+
+V4_SCHEMA_VERSION = 4
+V4_PLANNING = "planning"
+V4_CHECKPOINT_READY = "checkpoint_ready"
+V4_HANDOFF_REQUESTED = "handoff_requested"
+V4_EXECUTOR_RUNNING = "executor_running"
+V4_INCOMPLETE = "incomplete"
+V4_STALE = "stale"
+V4_PHASES = {
+    V4_PLANNING,
+    V4_CHECKPOINT_READY,
+    V4_HANDOFF_REQUESTED,
+    V4_EXECUTOR_RUNNING,
+    V4_INCOMPLETE,
+    V4_STALE,
+}
+V4_CHECKPOINT_PHASES = V4_PHASES - {V4_PLANNING}
+V4_ROUTE_PHASES = {
+    V4_HANDOFF_REQUESTED,
+    V4_EXECUTOR_RUNNING,
+    V4_INCOMPLETE,
+    V4_STALE,
+}
+V4_PACKET_HEADINGS = (
+    "Goal",
+    "Files Read",
+    "Constraints And Existing Patterns",
+    "Full Todo List",
+    "Task 1 Changes",
+    "Verification Already Run",
+    "Remaining Work",
+    "Risks / Do Not Repeat",
+)
+class V4StateError(ValueError):
+    """A v4 record or transition violates the durable workflow contract."""
+
+
+@dataclass
+class V4State:
+    root_session_id: str
+    workspace_id: str
+    host: str
+    schema_version: int = V4_SCHEMA_VERSION
+    phase: str = V4_PLANNING
+    preset: str = DEFAULT_PRESET
+    executor_model: str = ""
+    executor_effort: str = ""
+    max_todos: int = DEFAULT_MAX_TODOS
+    handoff_mode: str = "auto"
+    require_model_routing: bool = True
+    todos: list[Todo] = field(default_factory=list)
+    packet: str = ""
+    verification_evidence: list[str] = field(default_factory=list)
+    verification_warning: str = ""
+    route_token: str = ""
+    route_task_name: str = ""
+    route_tool_use_id: str = ""
+    executor_agent_id: str = ""
+    route_attempt: int = 0
+    launch_acknowledged: bool = False
+    created_at: str = ""
+    updated_at: str = ""
+    checkpoint_at: str = ""
+    route_requested_at: str = ""
+    executor_started_at: str = ""
+    last_event_at: str = ""
+    revision: int = 0
+    processed_event_ids: list[str] = field(default_factory=list)
+    last_error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "V4State":
+        if not isinstance(raw, dict):
+            raise V4StateError("v4 state record must be an object")
+        known = {name for name in cls.__dataclass_fields__}  # type: ignore[attr-defined]
+        values = {key: value for key, value in raw.items() if key in known}
+        todos = values.get("todos", [])
+        if not isinstance(todos, list):
+            raise V4StateError("v4 todo snapshot must be a list")
+        values["todos"] = [
+            todo if isinstance(todo, Todo) else Todo(**todo)
+            for todo in todos
+            if isinstance(todo, (Todo, dict))
+        ]
+        if len(values["todos"]) != len(todos):
+            raise V4StateError("v4 todo snapshot contains an invalid item")
+        try:
+            return cls(**values)
+        except TypeError as exc:
+            raise V4StateError(f"v4 state record is partial: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class V4LoadResult:
+    state: V4State | None
+    status: str
+    message: str = ""
+    next_command: str = ""
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_v4_timestamp(value: Any, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise V4StateError(f"{field_name} must be an ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise V4StateError(f"{field_name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise V4StateError(f"{field_name} must include a timezone")
+    return parsed
+
+
+def workspace_identity(workspace_root: str | os.PathLike[str]) -> str:
+    """Return a stable, non-reversible identity for a canonical workspace path."""
+    canonical = str(Path(workspace_root).expanduser().resolve())
+    return "ws-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
+def _missing_packet_headings(packet: str) -> list[str]:
+    missing: list[str] = []
+    for heading in V4_PACKET_HEADINGS:
+        pattern = rf"(?mi)^\s*(?:#{{1,6}}\s*)?{re.escape(heading)}\s*:?(?:\s+.*)?$"
+        if not re.search(pattern, packet or ""):
+            missing.append(heading)
+    return missing
+
+
+def validate_v4_state(state: V4State) -> None:
+    """Raise :class:`V4StateError` unless every phase invariant holds."""
+    if state.schema_version != V4_SCHEMA_VERSION:
+        raise V4StateError(f"unsupported state schema {state.schema_version!r}")
+    if not isinstance(state.root_session_id, str) or not state.root_session_id.strip():
+        raise V4StateError("root_session_id is required")
+    if not isinstance(state.workspace_id, str) or not state.workspace_id.strip():
+        raise V4StateError("workspace_id is required")
+    if state.host not in ("codex", "claude"):
+        raise V4StateError("host must be codex or claude")
+    if state.phase not in V4_PHASES:
+        raise V4StateError(f"invalid v4 phase {state.phase!r}")
+    string_fields = (
+        "preset",
+        "executor_model",
+        "executor_effort",
+        "handoff_mode",
+        "packet",
+        "verification_warning",
+        "route_token",
+        "route_task_name",
+        "route_tool_use_id",
+        "executor_agent_id",
+        "last_error",
+    )
+    if any(not isinstance(getattr(state, name), str) for name in string_fields):
+        raise V4StateError("v4 text fields must be strings")
+    if not isinstance(state.max_todos, int) or isinstance(state.max_todos, bool) or state.max_todos < 1:
+        raise V4StateError("max_todos must be positive")
+    if state.handoff_mode not in HANDOFF_MODES:
+        raise V4StateError(f"invalid handoff mode {state.handoff_mode!r}")
+    created = _parse_v4_timestamp(state.created_at, "created_at")
+    updated = _parse_v4_timestamp(state.updated_at, "updated_at")
+    if updated < created:
+        raise V4StateError("updated_at cannot precede created_at")
+    if not state.last_event_at:
+        raise V4StateError("last_event_at is required")
+    for field_name in (
+        "checkpoint_at",
+        "route_requested_at",
+        "executor_started_at",
+        "last_event_at",
+    ):
+        value = getattr(state, field_name)
+        if value:
+            parsed = _parse_v4_timestamp(value, field_name)
+            if parsed < created or parsed > updated:
+                raise V4StateError(f"{field_name} must fall between created_at and updated_at")
+    if (
+        not isinstance(state.revision, int)
+        or isinstance(state.revision, bool)
+        or not isinstance(state.route_attempt, int)
+        or isinstance(state.route_attempt, bool)
+        or state.revision < 0
+        or state.route_attempt < 0
+    ):
+        raise V4StateError("revision and route_attempt cannot be negative")
+    if not isinstance(state.require_model_routing, bool) or not isinstance(
+        state.launch_acknowledged, bool
+    ):
+        raise V4StateError("v4 capability flags must be booleans")
+    if not isinstance(state.processed_event_ids, list) or not all(
+        isinstance(event_id, str) and event_id for event_id in state.processed_event_ids
+    ):
+        raise V4StateError("processed event IDs must be non-empty strings")
+    if len(set(state.processed_event_ids)) != len(state.processed_event_ids):
+        raise V4StateError("processed event IDs must be unique")
+
+    if not isinstance(state.todos, list) or not all(isinstance(todo, Todo) for todo in state.todos):
+        raise V4StateError("v4 todo snapshot must contain normalized Todo records")
+    if any(
+        not isinstance(value, str)
+        for todo in state.todos
+        for value in (todo.id, todo.content, todo.status)
+    ):
+        raise V4StateError("v4 todo fields must be strings")
+    if not isinstance(state.verification_evidence, list) or not all(
+        isinstance(item, str) and item.strip() for item in state.verification_evidence
+    ):
+        raise V4StateError("verification evidence must contain non-empty strings")
+    if state.todos:
+        error = validate_todo_list(state.todos, state.max_todos)
+        if error:
+            raise V4StateError(error)
+        if any(todo.is_pause for todo in state.todos):
+            raise V4StateError("v4 todos contain real work only; PAUSE is not a work item")
+        ids = [todo.id.strip() for todo in state.todos]
+        if len(set(ids)) != len(ids):
+            raise V4StateError("v4 todo IDs must be unique")
+
+    if state.phase in V4_CHECKPOINT_PHASES:
+        if not state.todos:
+            raise V4StateError("checkpoint phases require a durable todo snapshot")
+        if state.todos[0].status != "completed":
+            raise V4StateError("checkpoint task 1 must be completed")
+        if count_remaining(state.todos) < 2:
+            raise V4StateError("checkpoint requires at least two remaining real tasks")
+        missing = _missing_packet_headings(state.packet)
+        if missing:
+            raise V4StateError("checkpoint packet is missing headings: " + ", ".join(missing))
+        if not state.verification_evidence and not state.verification_warning.strip():
+            raise V4StateError("checkpoint requires verification evidence or an explicit warning")
+        if not state.checkpoint_at:
+            raise V4StateError("checkpoint_at is required after checkpoint capture")
+
+    if state.phase in V4_ROUTE_PHASES:
+        if not state.route_token or not state.route_task_name:
+            raise V4StateError("route phases require a token and task name")
+        if state.route_attempt < 1 or not state.route_requested_at:
+            raise V4StateError("route phases require an attempt and request timestamp")
+
+    if state.phase == V4_EXECUTOR_RUNNING:
+        if not state.executor_agent_id:
+            raise V4StateError("executor_running requires a bound agent ID")
+        if not state.executor_started_at:
+            raise V4StateError("executor_running requires executor_started_at")
+    if state.phase in (V4_INCOMPLETE, V4_STALE) and not state.last_error.strip():
+        raise V4StateError(f"{state.phase} requires a recovery error")
+
+
+def new_v4_state(
+    root_session_id: str,
+    workspace_id: str,
+    host: str,
+    *,
+    now: str | None = None,
+    **settings: Any,
+) -> V4State:
+    timestamp = now or utc_timestamp()
+    state = V4State(
+        root_session_id=root_session_id.strip(),
+        workspace_id=workspace_id.strip(),
+        host=host,
+        created_at=timestamp,
+        updated_at=timestamp,
+        last_event_at=timestamp,
+        **settings,
+    )
+    validate_v4_state(state)
+    return state
+
+
+def create_v4_state(store_file: str | os.PathLike[str], state: V4State) -> None:
+    """Atomically create one root record without replacing an existing run."""
+    validate_v4_state(state)
+    with _store_lock(store_file):
+        data = _read_all(store_file)
+        if state.root_session_id in data:
+            raise V4StateError("a state record already exists for this root session")
+        data[state.root_session_id] = state.to_dict()
+        _write_all(store_file, data)
+
+
+def load_v4_state(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    workspace_id: str = "",
+) -> V4LoadResult:
+    """Load one v4 record and report deterministic reset/recovery information."""
+    root_session_id = (root_session_id or "").strip()
+    if not root_session_id:
+        return V4LoadResult(
+            None,
+            "missing_identity",
+            "Prewalk cannot resolve the active root session identity.",
+            "pw-doctor",
+        )
+    with _store_lock(store_file):
+        data, store_status = _read_all_with_status(store_file)
+        if store_status == "corrupt_store":
+            return V4LoadResult(
+                None,
+                "corrupt_store",
+                "Prewalk quarantined an unreadable state store. Re-arm this run.",
+                "prewalk",
+            )
+        raw = data.get(root_session_id)
+        if raw is None:
+            return V4LoadResult(None, "missing")
+        record_version = raw.get("schema_version")
+        if record_version in (None, 3):
+            data.pop(root_session_id, None)
+            _write_all(store_file, data)
+            return V4LoadResult(
+                None,
+                "legacy_reset",
+                "Prewalk reset an incompatible 0.3.x run; worktree files and host todos were unchanged.",
+                "prewalk",
+            )
+        if record_version != V4_SCHEMA_VERSION:
+            return V4LoadResult(
+                None,
+                "unsupported_version",
+                f"Prewalk state schema {record_version!r} is not supported by this plugin and was not changed.",
+                "pw-doctor",
+            )
+        try:
+            state = V4State.from_dict(raw)
+            validate_v4_state(state)
+        except (AttributeError, TypeError, V4StateError, ValueError) as exc:
+            return V4LoadResult(
+                None,
+                "invalid",
+                f"Prewalk found an invalid v4 state record: {exc}",
+                "pw-off",
+            )
+        if state.root_session_id != root_session_id:
+            return V4LoadResult(
+                None,
+                "invalid",
+                "Prewalk state key conflicts with its root session identity.",
+                "pw-off",
+            )
+        if workspace_id and state.workspace_id != workspace_id:
+            return V4LoadResult(
+                None,
+                "workspace_mismatch",
+                "Prewalk state belongs to a different workspace and was not changed.",
+                "pw-doctor",
+            )
+        if state.phase == V4_STALE:
+            return V4LoadResult(
+                state,
+                "stale",
+                "Prewalk cannot prove whether the bound executor is still running.",
+                "pw-reconcile",
+            )
+        if state.phase == V4_INCOMPLETE:
+            return V4LoadResult(
+                state,
+                "incomplete",
+                "Prewalk retained the durable checkpoint after an incomplete executor attempt.",
+                "pw-retry",
+            )
+        return V4LoadResult(state, "ok")
+
+
+_V4_IMMUTABLE_FIELDS = {
+    "schema_version",
+    "root_session_id",
+    "workspace_id",
+    "host",
+    "created_at",
+    "revision",
+    "processed_event_ids",
+}
+
+
+def apply_v4_transition(
+    store_file: str | os.PathLike[str],
+    root_session_id: str,
+    *,
+    expected_phases: Iterable[str],
+    target_phase: str,
+    event_id: str,
+    updates: dict[str, Any] | None = None,
+    now: str | None = None,
+) -> V4State:
+    """Apply one locked, invariant-checked, event-idempotent v4 transition."""
+    expected = set(expected_phases)
+    if not event_id.strip():
+        raise V4StateError("transition event_id is required")
+    if target_phase not in V4_PHASES:
+        raise V4StateError(f"invalid target phase {target_phase!r}")
+    changes = dict(updates or {})
+    forbidden = _V4_IMMUTABLE_FIELDS.intersection(changes)
+    if forbidden:
+        raise V4StateError("transition cannot replace immutable fields: " + ", ".join(sorted(forbidden)))
+    unknown = set(changes) - set(V4State.__dataclass_fields__)  # type: ignore[attr-defined]
+    if unknown:
+        raise V4StateError("transition contains unknown fields: " + ", ".join(sorted(unknown)))
+
+    with _store_lock(store_file):
+        data, status = _read_all_with_status(store_file)
+        if status == "corrupt_store":
+            raise V4StateError("state store was corrupt and has been quarantined")
+        raw = data.get(root_session_id)
+        if raw is None or raw.get("schema_version") != V4_SCHEMA_VERSION:
+            raise V4StateError("no v4 state exists for this root session")
+        state = V4State.from_dict(raw)
+        validate_v4_state(state)
+        if event_id in state.processed_event_ids:
+            return state
+        if state.phase not in expected:
+            raise V4StateError(
+                f"event {event_id!r} cannot transition {state.phase!r}; expected {sorted(expected)!r}"
+            )
+        for key, value in changes.items():
+            if key == "todos":
+                value = [todo if isinstance(todo, Todo) else Todo(**todo) for todo in value]
+            setattr(state, key, value)
+        timestamp = now or utc_timestamp()
+        if _parse_v4_timestamp(timestamp, "updated_at") < _parse_v4_timestamp(
+            state.updated_at, "previous updated_at"
+        ):
+            raise V4StateError("transition timestamp cannot precede the current state")
+        state.phase = target_phase
+        state.updated_at = timestamp
+        state.last_event_at = timestamp
+        state.revision += 1
+        state.processed_event_ids = state.processed_event_ids + [event_id]
+        validate_v4_state(state)
+        data[root_session_id] = state.to_dict()
+        _write_all(store_file, data)
+        return state
 
 
 # ---------------------------------------------------------------------------
