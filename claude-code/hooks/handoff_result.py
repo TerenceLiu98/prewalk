@@ -26,14 +26,10 @@ def main() -> int:
     payload = _common.read_input()
     sid = _common.session_id(payload)
     store = _common.store_file()
-    state = core.load_state(store, sid)
-    if state is None or state.phase not in (core.HANDOFF_REQUESTED, core.EXECUTOR):
+    if not sid:
         return 0
 
     tool_use_id = str(payload.get("tool_use_id") or payload.get("toolUseId") or "").strip()
-    if not tool_use_id or tool_use_id != state.handoff_tool_use_id:
-        return 0
-
     event = str(payload.get("hook_event_name") or payload.get("hookEventName") or "PostToolUse")
     failed_event = event in ("PostToolUseFailure", "PermissionDenied")
     response = payload.get("tool_response", payload.get("toolResponse"))
@@ -41,13 +37,18 @@ def main() -> int:
     if failed_event:
         error = str(payload.get("error") or payload.get("reason") or result).strip()
         reason = error.splitlines()[0] if error else "executor Task failed or was rejected"
-        action = core.on_handoff_failed(store, sid, reason)
-        _common.emit(action, event=event)
+        decision = core.fail_claude_agent_call(
+            store, sid, tool_use_id=tool_use_id, reason=reason
+        )
+        if decision.handled:
+            _common.emit(core.HookAction(system_message=decision.message), event=event)
         return 0
 
-    action = core.on_handoff_launch_ack(store, sid, tool_use_id)
-    if action is not None:
-        _common.emit(action, event=event)
+    decision = core.acknowledge_claude_agent_call(
+        store, sid, tool_use_id=tool_use_id
+    )
+    if decision.handled:
+        _common.emit(core.HookAction(system_message=decision.message), event=event)
     return 0
 
 

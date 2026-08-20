@@ -42,7 +42,7 @@ Task PreToolUse
   -> require one-time token and persist tool_use_id
   -> updatedInput.model = executor
   -> updatedInput.subagent_type = prewalk:prewalk-executor
-SubagentStart
+SubagentStart (`prewalk-executor`, or plugin-scoped equivalent)
   -> bind matching agent_id and enter executor
 Task PostToolUse
   -> acknowledge only the matching launch

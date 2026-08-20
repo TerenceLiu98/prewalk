@@ -111,6 +111,27 @@ class EndToEndFlowTests(unittest.TestCase):
             "last_assistant_message": PACKET,
         }, extra_env=extra_env)
 
+    def arm_claude_checkpoint(
+        self, session_id: str, *, fast: bool = False, extra_env=None
+    ) -> None:
+        goal = "--fast Build the feature" if fast else "Build the feature"
+        self.run_script(
+            "claude-code", "_arm.py", "arm", session_id, goal, extra_env=extra_env
+        )
+        self.run_script(
+            "claude-code", "todo_tracker.py",
+            payload=self.todo_payload(session_id, "claude-code"), extra_env=extra_env,
+        )
+        self.run_script("claude-code", "pause_detect.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "Stop",
+            "last_assistant_message": PACKET,
+        }, extra_env=extra_env)
+
+    def claude_state(self, session_id: str) -> dict | None:
+        store = Path(self.temp_dir.name) / "claude-code" / "prewalk-state.json"
+        return json.loads(store.read_text(encoding="utf-8")).get(session_id)
+
     def request_codex_route(self, session_id: str, *, extra_env=None) -> dict:
         handoff = self.run_script(
             "codex", "_pw.py", "go", session_id,
@@ -328,7 +349,6 @@ class EndToEndFlowTests(unittest.TestCase):
         self.assertEqual(record["schema_version"], 4)
         self.assertEqual(record["packet"], PACKET)
 
-    @unittest.skip("v4 Claude routing is implemented and re-enabled by issue #15")
     def test_claude_scripts_route_and_complete_a_full_handoff(self) -> None:
         session_id = "claude-e2e"
         armed = self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
@@ -347,6 +367,11 @@ class EndToEndFlowTests(unittest.TestCase):
             "session_id": session_id,
             "tool_response": {"filePath": "/tmp/example", "success": True},
         })
+        self.run_script("claude-code", "pause_detect.py", payload={
+            "session_id": session_id,
+            "hook_event_name": "Stop",
+            "last_assistant_message": PACKET,
+        })
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         self.assertIn("spawn ONE Task", handoff.stdout)
         token = self.handoff_token(handoff.stdout)
@@ -364,9 +389,8 @@ class EndToEndFlowTests(unittest.TestCase):
         updated = output["hookSpecificOutput"]["updatedInput"]
         self.assertEqual(updated["model"], "haiku")
         self.assertEqual(updated["subagent_type"], "prewalk:prewalk-executor")
-        pending = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("handoff_requested", pending.stdout)
-        self.assertIn("routed: yes", pending.stdout)
+        self.assertIn(PACKET, updated["prompt"])
+        self.assertEqual(self.claude_state(session_id)["route_tool_use_id"], "tool-prewalk")
 
         self.run_script("claude-code", "handoff_result.py", payload={
             "session_id": session_id,
@@ -374,9 +398,7 @@ class EndToEndFlowTests(unittest.TestCase):
             "tool_use_id": "tool-prewalk",
             "tool_response": {"success": True, "content": "background agent launched"},
         })
-        acknowledged = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("handoff_requested", acknowledged.stdout)
-        self.assertIn("launch_ack: yes", acknowledged.stdout)
+        self.assertTrue(self.claude_state(session_id)["launch_acknowledged"])
 
         self.run_script("claude-code", "handoff_lifecycle.py", payload={
             "session_id": session_id,
@@ -384,9 +406,9 @@ class EndToEndFlowTests(unittest.TestCase):
             "agent_id": "agent-prewalk",
             "agent_type": "prewalk:prewalk-executor",
         })
-        running = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("executor", running.stdout)
-        self.assertIn("executor_agent: agent-prewalk", running.stdout)
+        running = self.claude_state(session_id)
+        self.assertEqual(running["phase"], "executor_running")
+        self.assertEqual(running["executor_agent_id"], "agent-prewalk")
 
         # Global plugin hooks also fire in subagents. Their todo updates must
         # not finish the root run before the bound SubagentStop marker arrives.
@@ -441,14 +463,9 @@ class EndToEndFlowTests(unittest.TestCase):
         store = Path(self.temp_dir.name) / "claude-code" / "prewalk-state.json"
         self.assertFalse(store.exists())
 
-    @unittest.skip("v4 Claude routing is implemented and re-enabled by issue #15")
     def test_claude_failed_task_restores_retryable_checkpoint(self) -> None:
         session_id = "claude-retry"
-        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
-        self.run_script(
-            "claude-code", "todo_tracker.py",
-            payload=self.todo_payload(session_id, "claude-code"),
-        )
+        self.arm_claude_checkpoint(session_id)
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         token = self.handoff_token(handoff.stdout)
         self.run_script("claude-code", "handoff_router.py", payload={
@@ -465,18 +482,13 @@ class EndToEndFlowTests(unittest.TestCase):
             "tool_use_id": "tool-failed",
             "error": "model unavailable",
         })
-        status = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("paused", status.stdout)
-        self.assertIn("model unavailable", status.stdout)
+        state = self.claude_state(session_id)
+        self.assertEqual(state["phase"], "incomplete")
+        self.assertEqual(state["last_error"], "model unavailable")
 
-    @unittest.skip("v4 Claude routing is implemented and re-enabled by issue #15")
     def test_claude_missing_marker_and_duplicate_lifecycle_are_retryable(self) -> None:
         session_id = "claude-missing-marker"
-        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
-        self.run_script(
-            "claude-code", "todo_tracker.py",
-            payload=self.todo_payload(session_id, "claude-code"),
-        )
+        self.arm_claude_checkpoint(session_id)
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         token = self.handoff_token(handoff.stdout)
         self.run_script("claude-code", "handoff_router.py", payload={
@@ -498,18 +510,13 @@ class EndToEndFlowTests(unittest.TestCase):
             "hook_event_name": "SubagentStop",
             "last_assistant_message": "Finished but omitted the marker",
         })
-        status = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("paused", status.stdout)
-        self.assertIn("without a PREWALK completion marker", status.stdout)
+        state = self.claude_state(session_id)
+        self.assertEqual(state["phase"], "incomplete")
+        self.assertIn("without a valid final marker", state["last_error"])
 
-    @unittest.skip("v4 Claude routing is implemented and re-enabled by issue #15")
     def test_claude_unrelated_agent_events_leave_pending_handoff_unchanged(self) -> None:
         session_id = "claude-unrelated"
-        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
-        self.run_script(
-            "claude-code", "todo_tracker.py",
-            payload=self.todo_payload(session_id, "claude-code"),
-        )
+        self.arm_claude_checkpoint(session_id)
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         token = self.handoff_token(handoff.stdout)
         unrelated = self.run_script("claude-code", "handoff_router.py", payload={
@@ -525,9 +532,9 @@ class EndToEndFlowTests(unittest.TestCase):
             "tool_use_id": "tool-unrelated",
             "tool_response": {"success": True, "content": "PREWALK_COMPLETE"},
         })
-        status = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("handoff_requested", status.stdout)
-        self.assertIn("routed: no", status.stdout)
+        state = self.claude_state(session_id)
+        self.assertEqual(state["phase"], "handoff_requested")
+        self.assertEqual(state["route_tool_use_id"], "")
 
         nested = self.run_script("claude-code", "handoff_router.py", payload={
             "session_id": session_id,
@@ -537,19 +544,11 @@ class EndToEndFlowTests(unittest.TestCase):
             "tool_input": {"prompt": f"packet\nPREWALK_HANDOFF_TOKEN: {token}"},
         })
         self.assertEqual(nested.stdout, "")
-        self.assertIn(
-            "routed: no",
-            self.run_script("claude-code", "_arm.py", "status", session_id).stdout,
-        )
+        self.assertEqual(self.claude_state(session_id)["route_tool_use_id"], "")
 
-    @unittest.skip("v4 Claude routing is implemented and re-enabled by issue #15")
     def test_claude_foreground_lifecycle_completes_before_agent_posttooluse(self) -> None:
         session_id = "claude-foreground"
-        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
-        self.run_script(
-            "claude-code", "todo_tracker.py",
-            payload=self.todo_payload(session_id, "claude-code"),
-        )
+        self.arm_claude_checkpoint(session_id)
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         token = self.handoff_token(handoff.stdout)
         self.run_script("claude-code", "handoff_router.py", payload={
@@ -587,14 +586,9 @@ class EndToEndFlowTests(unittest.TestCase):
             self.run_script("claude-code", "_arm.py", "status", session_id).stdout,
         )
 
-    @unittest.skip("v4 Claude routing is implemented and re-enabled by issue #15")
     def test_claude_token_call_without_tool_identity_is_denied_and_retryable(self) -> None:
         session_id = "claude-no-tool-id"
-        self.run_script("claude-code", "_arm.py", "arm", session_id, "Build the feature")
-        self.run_script(
-            "claude-code", "todo_tracker.py",
-            payload=self.todo_payload(session_id, "claude-code"),
-        )
+        self.arm_claude_checkpoint(session_id)
         handoff = self.run_script("claude-code", "_pw.py", "go", session_id)
         token = self.handoff_token(handoff.stdout)
         denied = self.run_script("claude-code", "handoff_router.py", payload={
@@ -604,11 +598,10 @@ class EndToEndFlowTests(unittest.TestCase):
         })
         output = json.loads(denied.stdout)
         self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
-        status = self.run_script("claude-code", "_arm.py", "status", session_id)
-        self.assertIn("paused", status.stdout)
-        self.assertIn("tool_use_id", status.stdout)
+        state = self.claude_state(session_id)
+        self.assertEqual(state["phase"], "incomplete")
+        self.assertIn("tool_use_id", state["last_error"])
 
-    @unittest.skip("v4 fast routing is re-enabled by issues #13 and #15")
     def test_claude_fast_mode_requests_handoff_from_stop_hook(self) -> None:
         session_id = "claude-fast"
         self.run_script(
@@ -621,6 +614,7 @@ class EndToEndFlowTests(unittest.TestCase):
         stopped = self.run_script("claude-code", "pause_detect.py", payload={
             "session_id": session_id,
             "hook_event_name": "Stop",
+            "last_assistant_message": PACKET,
         })
         output = json.loads(stopped.stdout)
         self.assertEqual(output["decision"], "block")

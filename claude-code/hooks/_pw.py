@@ -14,6 +14,7 @@ message) for the skill to surface to the model.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import _bootstrap  # noqa: F401  (locates prewalk_core.py)
@@ -31,7 +32,9 @@ def main() -> int:
     store = _common.store_file()
 
     if sub == "go":
-        result = core.v4_handoff_context(store, session_id)
+        result = core.request_claude_handoff(
+            store, session_id, environment=dict(os.environ)
+        )
         print(_common.claude_commands(
             result.message or "There is no active prewalk checkpoint in this session."
         ))

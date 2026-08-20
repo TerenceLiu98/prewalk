@@ -81,11 +81,11 @@ for ev, grp in {
          "hooks":[{"type":"command","command":cmd("handoff_result.py")} ]},
     ],
     "SubagentStart": [
-        {"matcher":"^prewalk:prewalk-executor$",
+        {"matcher":"^(prewalk:)?prewalk-executor$",
          "hooks":[{"type":"command","command":cmd("handoff_lifecycle.py")} ]},
     ],
     "SubagentStop": [
-        {"matcher":"^prewalk:prewalk-executor$",
+        {"matcher":"^(prewalk:)?prewalk-executor$",
          "hooks":[{"type":"command","command":cmd("handoff_lifecycle.py")} ]},
     ],
     "PostToolUseFailure": [

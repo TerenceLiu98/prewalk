@@ -23,12 +23,12 @@
           "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_result.py\"" } ] }
     ],
     "SubagentStart": [
-      { "matcher": "^prewalk:prewalk-executor$",
+      { "matcher": "^(prewalk:)?prewalk-executor$",
         "hooks": [ { "type": "command",
           "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_lifecycle.py\"" } ] }
     ],
     "SubagentStop": [
-      { "matcher": "^prewalk:prewalk-executor$",
+      { "matcher": "^(prewalk:)?prewalk-executor$",
         "hooks": [ { "type": "command",
           "command": "python3 \"<PREWALK_ROOT>/hooks/handoff_lifecycle.py\"" } ] }
     ],
